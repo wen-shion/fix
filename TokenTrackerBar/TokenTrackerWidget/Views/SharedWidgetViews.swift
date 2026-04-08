@@ -15,11 +15,11 @@ struct WidgetHeader: View {
                 .foregroundStyle(.tint)
             Text(title)
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.primary)
+                .foregroundStyle(Color.primary)
             if let subtitle {
                 Text(subtitle)
                     .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.secondary)
             }
             Spacer(minLength: 0)
         }
@@ -38,17 +38,17 @@ struct WidgetStat: View {
         VStack(alignment: alignment, spacing: 2) {
             Text(label.uppercased())
                 .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.secondary)
                 .tracking(0.4)
             Text(value)
                 .font(.system(size: 18, weight: .bold, design: .rounded))
-                .foregroundStyle(.primary)
+                .foregroundStyle(Color.primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
             if let sub {
                 Text(sub)
                     .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.secondary)
                     .lineLimit(1)
             }
         }
@@ -189,12 +189,12 @@ struct LimitBarRow: View {
                     .frame(width: 6, height: 6)
                 Text(limit.label)
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(Color.primary)
                     .lineLimit(1)
                 Spacer(minLength: 4)
                 Text(WidgetFormat.percent(f * 100, decimals: 0))
                     .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.secondary)
                     .monospacedDigit()
             }
             GeometryReader { geo in
@@ -230,7 +230,7 @@ struct SourceDot: View {
             Spacer(minLength: 4)
             Text(value)
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.secondary)
                 .monospacedDigit()
         }
     }
@@ -245,10 +245,10 @@ struct WidgetEmptyState: View {
         VStack(spacing: 6) {
             Image(systemName: "bolt.slash")
                 .font(.system(size: 22, weight: .light))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.secondary)
             Text(message)
                 .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.secondary)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -268,7 +268,7 @@ struct WidgetFooter: View {
                 .frame(width: 5, height: 5)
             Text("Updated \(WidgetFormat.relativeUpdated(updated))")
                 .font(.system(size: 9))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.secondary)
             Spacer(minLength: 0)
         }
     }

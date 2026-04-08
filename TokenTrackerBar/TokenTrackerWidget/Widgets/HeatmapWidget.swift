@@ -52,11 +52,11 @@ struct HeatmapWidgetView: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(WidgetFormat.compact(snap.last30d.tokens))
                     .font(.system(size: 14, weight: .bold, design: .rounded))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(Color.primary)
                     .monospacedDigit()
                 Text("tokens · \(snap.heatmap.activeDays) active days")
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.secondary)
                 Spacer(minLength: 0)
             }
         }
