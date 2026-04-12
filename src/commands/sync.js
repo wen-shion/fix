@@ -13,6 +13,7 @@ const {
   readOpencodeDbMessages,
   resolveKiroDbPath,
   resolveKiroJsonlPath,
+  resolveHermesDbPath,
   parseRolloutIncremental,
   parseClaudeIncremental,
   parseGeminiIncremental,
@@ -21,6 +22,7 @@ const {
   parseOpenclawIncremental,
   parseCursorApiIncremental,
   parseKiroIncremental,
+  parseHermesIncremental,
 } = require("../lib/rollout");
 const { createProgress, renderBar, formatNumber, formatBytes } = require("../lib/progress");
 const {
@@ -320,6 +322,27 @@ async function cmdSync(argv) {
       });
     }
 
+    // ── Hermes Agent (SQLite-based) ──
+    let hermesResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+    const hermesDbPath = resolveHermesDbPath();
+    if (fssync.existsSync(hermesDbPath)) {
+      if (progress?.enabled) {
+        progress.start(`Parsing Hermes ${renderBar(0)} | buckets 0`);
+      }
+      hermesResult = await parseHermesIncremental({
+        dbPath: hermesDbPath,
+        cursors,
+        queuePath,
+        onProgress: (p) => {
+          if (!progress?.enabled) return;
+          const pct = p.total > 0 ? p.index / p.total : 1;
+          progress.update(
+            `Parsing Hermes ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} sessions | buckets ${formatNumber(p.bucketsQueued)}`,
+          );
+        },
+      });
+    }
+
     if (cursors?.projectHourly?.projects && projectQueuePath && projectQueueStatePath) {
       for (const [projectKey, meta] of Object.entries(cursors.projectHourly.projects)) {
         if (!meta || typeof meta !== "object") continue;
@@ -395,7 +418,8 @@ async function cmdSync(argv) {
         geminiResult.filesProcessed +
         opencodeResult.filesProcessed +
         cursorResult.recordsProcessed +
-        kiroResult.recordsProcessed;
+        kiroResult.recordsProcessed +
+        hermesResult.recordsProcessed;
       const totalBuckets =
         parseResult.bucketsQueued +
         openclawResult.bucketsQueued +
@@ -403,7 +427,8 @@ async function cmdSync(argv) {
         geminiResult.bucketsQueued +
         opencodeResult.bucketsQueued +
         cursorResult.bucketsQueued +
-        kiroResult.bucketsQueued;
+        kiroResult.bucketsQueued +
+        hermesResult.bucketsQueued;
       process.stdout.write(
         [
           "Sync finished:",

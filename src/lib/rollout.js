@@ -2888,6 +2888,117 @@ async function parseKiroIncremental({ dbPath, jsonlPath, cursors, queuePath, onP
   return { recordsProcessed: rows.length, eventsAggregated, bucketsQueued };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Hermes Agent — SQLite-based (sessions table in ~/.hermes/state.db)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function resolveHermesDbPath() {
+  const home = require("node:os").homedir();
+  return path.join(home, ".hermes", "state.db");
+}
+
+function readHermesSessions(dbPath, sinceEpoch) {
+  if (!dbPath || !fssync.existsSync(dbPath)) return [];
+  const since = Number.isFinite(sinceEpoch) && sinceEpoch > 0 ? sinceEpoch : 0;
+  const sql = `SELECT id, model, started_at, ended_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, message_count FROM sessions WHERE started_at > ${since} AND (input_tokens > 0 OR output_tokens > 0 OR cache_read_tokens > 0 OR reasoning_tokens > 0) ORDER BY started_at ASC`;
+  let raw;
+  try {
+    raw = cp.execFileSync("sqlite3", ["-json", dbPath, sql], {
+      encoding: "utf8",
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: 15_000,
+    });
+  } catch (_e) {
+    return [];
+  }
+  if (!raw || !raw.trim()) return [];
+  let rows;
+  try {
+    rows = JSON.parse(raw);
+  } catch (_e) {
+    return [];
+  }
+  return Array.isArray(rows) ? rows : [];
+}
+
+async function parseHermesIncremental({ dbPath, cursors, queuePath, onProgress }) {
+  await ensureDir(path.dirname(queuePath));
+  const hermesState = cursors.hermes && typeof cursors.hermes === "object" ? cursors.hermes : {};
+  const lastStartedAt =
+    typeof hermesState.lastStartedAt === "number" ? hermesState.lastStartedAt : 0;
+
+  const resolvedDbPath = dbPath || resolveHermesDbPath();
+  if (!fssync.existsSync(resolvedDbPath)) {
+    return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+  }
+
+  const rows = readHermesSessions(resolvedDbPath, lastStartedAt);
+  if (rows.length === 0) {
+    cursors.hermes = { ...hermesState, lastStartedAt, updatedAt: new Date().toISOString() };
+    return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+  }
+
+  const hourlyState = normalizeHourlyState(cursors?.hourly);
+  const touchedBuckets = new Set();
+  const cb = typeof onProgress === "function" ? onProgress : null;
+  let eventsAggregated = 0;
+  let maxStartedAt = lastStartedAt;
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const inputTokens = toNonNegativeInt(row.input_tokens);
+    const outputTokens = toNonNegativeInt(row.output_tokens);
+    const cacheRead = toNonNegativeInt(row.cache_read_tokens);
+    const cacheWrite = toNonNegativeInt(row.cache_write_tokens);
+    const reasoning = toNonNegativeInt(row.reasoning_tokens);
+    if (inputTokens === 0 && outputTokens === 0 && cacheRead === 0 && reasoning === 0) continue;
+
+    // Prefer ended_at for bucket placement; fall back to started_at
+    const epochSec = row.ended_at || row.started_at;
+    if (!epochSec || !Number.isFinite(epochSec)) continue;
+    const tsIso = new Date(epochSec * 1000).toISOString();
+    const bucketStart = toUtcHalfHourStart(tsIso);
+    if (!bucketStart) continue;
+
+    const model = normalizeModelInput(row.model) || "hermes-agent";
+
+    const delta = {
+      input_tokens: inputTokens,
+      cached_input_tokens: cacheRead,
+      cache_creation_input_tokens: cacheWrite,
+      output_tokens: outputTokens,
+      reasoning_output_tokens: reasoning,
+      total_tokens: inputTokens + outputTokens + cacheRead + cacheWrite + reasoning,
+      conversation_count: toNonNegativeInt(row.message_count) || 1,
+    };
+
+    const bucket = getHourlyBucket(hourlyState, "hermes", model, bucketStart);
+    addTotals(bucket.totals, delta);
+    touchedBuckets.add(bucketKey("hermes", model, bucketStart));
+    eventsAggregated++;
+
+    if (row.started_at > maxStartedAt) maxStartedAt = row.started_at;
+
+    if (cb) {
+      cb({
+        index: i + 1,
+        total: rows.length,
+        recordsProcessed: i + 1,
+        eventsAggregated,
+        bucketsQueued: touchedBuckets.size,
+      });
+    }
+  }
+
+  const bucketsQueued = await enqueueTouchedBuckets({ queuePath, hourlyState, touchedBuckets });
+  const updatedAt = new Date().toISOString();
+  hourlyState.updatedAt = updatedAt;
+  cursors.hourly = hourlyState;
+  cursors.hermes = { ...hermesState, lastStartedAt: maxStartedAt, updatedAt };
+
+  return { recordsProcessed: rows.length, eventsAggregated, bucketsQueued };
+}
+
 module.exports = {
   listRolloutFiles,
   listClaudeProjectFiles,
@@ -2896,6 +3007,7 @@ module.exports = {
   readOpencodeDbMessages,
   resolveKiroDbPath,
   resolveKiroJsonlPath,
+  resolveHermesDbPath,
   parseRolloutIncremental,
   parseClaudeIncremental,
   parseGeminiIncremental,
@@ -2904,4 +3016,5 @@ module.exports = {
   parseOpenclawIncremental,
   parseCursorApiIncremental,
   parseKiroIncremental,
+  parseHermesIncremental,
 };

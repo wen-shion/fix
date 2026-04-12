@@ -4,12 +4,14 @@ const path = require("node:path");
 const fs = require("node:fs/promises");
 const { test } = require("node:test");
 
+const cp = require("node:child_process");
 const {
   parseRolloutIncremental,
   parseClaudeIncremental,
   parseGeminiIncremental,
   parseOpencodeIncremental,
   parseKiroIncremental,
+  parseHermesIncremental,
 } = require("../src/lib/rollout");
 
 test("parseRolloutIncremental skips duplicate token_count records (unchanged total_token_usage)", async () => {
@@ -2193,3 +2195,142 @@ async function readJsonLines(filePath) {
   const lines = text.split("\n").filter(Boolean);
   return lines.map((l) => JSON.parse(l));
 }
+
+// ── Hermes Agent integration tests ──
+
+function createHermesDb(dbPath, sessions) {
+  cp.execFileSync("sqlite3", [
+    dbPath,
+    `CREATE TABLE sessions (
+      id TEXT PRIMARY KEY,
+      source TEXT NOT NULL,
+      user_id TEXT,
+      model TEXT,
+      model_config TEXT,
+      system_prompt TEXT,
+      parent_session_id TEXT,
+      started_at REAL NOT NULL,
+      ended_at REAL,
+      end_reason TEXT,
+      message_count INTEGER DEFAULT 0,
+      tool_call_count INTEGER DEFAULT 0,
+      input_tokens INTEGER DEFAULT 0,
+      output_tokens INTEGER DEFAULT 0,
+      cache_read_tokens INTEGER DEFAULT 0,
+      cache_write_tokens INTEGER DEFAULT 0,
+      reasoning_tokens INTEGER DEFAULT 0,
+      billing_provider TEXT,
+      billing_base_url TEXT,
+      billing_mode TEXT,
+      estimated_cost_usd REAL,
+      actual_cost_usd REAL,
+      cost_status TEXT,
+      cost_source TEXT,
+      pricing_version TEXT,
+      title TEXT
+    );`,
+  ]);
+  for (const s of sessions) {
+    const vals = [
+      `'${s.id}'`, `'${s.source || "cli"}'`, s.model ? `'${s.model}'` : "NULL",
+      s.started_at, s.ended_at || "NULL",
+      s.input_tokens || 0, s.output_tokens || 0,
+      s.cache_read_tokens || 0, s.cache_write_tokens || 0,
+      s.reasoning_tokens || 0, s.message_count || 0,
+    ].join(",");
+    cp.execFileSync("sqlite3", [
+      dbPath,
+      `INSERT INTO sessions (id, source, model, started_at, ended_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, message_count) VALUES (${vals});`,
+    ]);
+  }
+}
+
+test("parseHermesIncremental processes sessions incrementally", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-hermes-"));
+  try {
+    const dbPath = path.join(tmp, "state.db");
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1, files: {}, updatedAt: null };
+
+    // Two sessions at different times
+    const epoch1 = 1775993779.0; // 2026-04-12T11:36:19Z
+    const epoch2 = 1775997400.0; // 2026-04-12T12:36:40Z
+    createHermesDb(dbPath, [
+      { id: "sess_001", model: "gpt-5.4-mini", started_at: epoch1, ended_at: epoch1 + 120, input_tokens: 1000, output_tokens: 500, cache_read_tokens: 200, message_count: 4 },
+      { id: "sess_002", model: "claude-sonnet-4-6", started_at: epoch2, ended_at: epoch2 + 300, input_tokens: 2000, output_tokens: 1000, cache_read_tokens: 500, reasoning_tokens: 100, message_count: 8 },
+    ]);
+
+    // First parse — should process both sessions
+    const first = await parseHermesIncremental({ dbPath, cursors, queuePath });
+    assert.equal(first.recordsProcessed, 2);
+    assert.equal(first.eventsAggregated, 2);
+    assert.ok(first.bucketsQueued >= 1);
+    assert.equal(cursors.hermes.lastStartedAt, epoch2);
+
+    const queued = await readJsonLines(queuePath);
+    assert.ok(queued.length >= 1);
+    const hermesBuckets = queued.filter((b) => b.source === "hermes");
+    assert.ok(hermesBuckets.length >= 1);
+    // Verify token fields on first bucket
+    const b1 = hermesBuckets.find((b) => b.model === "gpt-5.4-mini");
+    assert.ok(b1);
+    assert.equal(b1.input_tokens, 1000);
+    assert.equal(b1.output_tokens, 500);
+    assert.equal(b1.cached_input_tokens, 200);
+
+    // Second parse — no new data, should be no-op
+    const second = await parseHermesIncremental({ dbPath, cursors, queuePath });
+    assert.equal(second.recordsProcessed, 0);
+    assert.equal(second.eventsAggregated, 0);
+    assert.equal(second.bucketsQueued, 0);
+
+    // Add a third session and parse again — incremental
+    cp.execFileSync("sqlite3", [
+      dbPath,
+      `INSERT INTO sessions (id, source, model, started_at, ended_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, message_count) VALUES ('sess_003', 'cli', 'gpt-5.4-mini', ${epoch2 + 3600}, ${epoch2 + 3700}, 500, 250, 0, 0, 0, 2);`,
+    ]);
+    const third = await parseHermesIncremental({ dbPath, cursors, queuePath });
+    assert.equal(third.recordsProcessed, 1);
+    assert.equal(third.eventsAggregated, 1);
+    assert.ok(third.bucketsQueued >= 1);
+    assert.equal(cursors.hermes.lastStartedAt, epoch2 + 3600);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("parseHermesIncremental returns zero for nonexistent database", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-hermes-"));
+  try {
+    const dbPath = path.join(tmp, "nonexistent.db");
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1 };
+
+    const result = await parseHermesIncremental({ dbPath, cursors, queuePath });
+    assert.equal(result.recordsProcessed, 0);
+    assert.equal(result.eventsAggregated, 0);
+    assert.equal(result.bucketsQueued, 0);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("parseHermesIncremental skips sessions with zero tokens", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-hermes-"));
+  try {
+    const dbPath = path.join(tmp, "state.db");
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1 };
+
+    createHermesDb(dbPath, [
+      { id: "sess_empty", model: "gpt-5.4-mini", started_at: 1775993779.0, input_tokens: 0, output_tokens: 0, message_count: 1 },
+    ]);
+
+    const result = await parseHermesIncremental({ dbPath, cursors, queuePath });
+    // The SQL WHERE clause already filters zero-token sessions, so 0 records returned
+    assert.equal(result.recordsProcessed, 0);
+    assert.equal(result.eventsAggregated, 0);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
