@@ -53,7 +53,14 @@ final class NativeBridge {
             }
         case "action":
             if let name = dict["name"] as? String {
-                runAction(name)
+                if name == "saveImageToDownloads" {
+                    saveImageToDownloads(payload: dict)
+                } else if name == "openURL", let urlStr = dict["value"] as? String,
+                          let url = URL(string: urlStr) {
+                    NSWorkspace.shared.open(url)
+                } else {
+                    runAction(name)
+                }
             }
         default:
             break
@@ -164,5 +171,89 @@ final class NativeBridge {
         default:
             break
         }
+    }
+
+    // MARK: - Image saving
+
+    private func saveImageToDownloads(payload: [String: Any]) {
+        let requestId = (payload["requestId"] as? String) ?? ""
+        guard let dataUrl = payload["dataUrl"] as? String else {
+            postSaveImageResult(requestId: requestId, ok: false, path: nil, error: "missing dataUrl")
+            return
+        }
+        let rawName = (payload["filename"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            ?? "tokentracker-share-\(Int(Date().timeIntervalSince1970)).png"
+        let filename = sanitizeFilename(rawName)
+
+        guard let commaIdx = dataUrl.firstIndex(of: ",") else {
+            postSaveImageResult(requestId: requestId, ok: false, path: nil, error: "invalid data URL")
+            return
+        }
+        let base64 = String(dataUrl[dataUrl.index(after: commaIdx)...])
+        guard let imageData = Data(base64Encoded: base64, options: .ignoreUnknownCharacters) else {
+            postSaveImageResult(requestId: requestId, ok: false, path: nil, error: "base64 decode failed")
+            return
+        }
+
+        let downloadsDir: URL
+        do {
+            downloadsDir = try FileManager.default.url(
+                for: .downloadsDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
+        } catch {
+            postSaveImageResult(requestId: requestId, ok: false, path: nil, error: error.localizedDescription)
+            return
+        }
+
+        let target = uniqueFileURL(base: downloadsDir.appendingPathComponent(filename))
+        do {
+            try imageData.write(to: target, options: .atomic)
+        } catch {
+            postSaveImageResult(requestId: requestId, ok: false, path: nil, error: error.localizedDescription)
+            return
+        }
+
+        NSWorkspace.shared.activateFileViewerSelecting([target])
+        postSaveImageResult(requestId: requestId, ok: true, path: target.path, error: nil)
+    }
+
+    private func sanitizeFilename(_ raw: String) -> String {
+        let invalidChars = CharacterSet(charactersIn: "/\\:*?\"<>|")
+        let cleaned = raw.components(separatedBy: invalidChars).joined()
+        let trimmed = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "tokentracker-share.png" : trimmed
+    }
+
+    private func uniqueFileURL(base: URL) -> URL {
+        var candidate = base
+        var index = 1
+        let fileManager = FileManager.default
+        let directory = base.deletingLastPathComponent()
+        let stem = base.deletingPathExtension().lastPathComponent
+        let ext = base.pathExtension
+        while fileManager.fileExists(atPath: candidate.path) {
+            let nextName = ext.isEmpty ? "\(stem)-\(index)" : "\(stem)-\(index).\(ext)"
+            candidate = directory.appendingPathComponent(nextName)
+            index += 1
+        }
+        return candidate
+    }
+
+    private func postSaveImageResult(requestId: String, ok: Bool, path: String?, error: String?) {
+        var detail: [String: Any] = [
+            "requestId": requestId,
+            "ok": ok,
+        ]
+        if let path { detail["path"] = path }
+        if let error { detail["error"] = error }
+        guard
+            let data = try? JSONSerialization.data(withJSONObject: detail, options: []),
+            let json = String(data: data, encoding: .utf8)
+        else { return }
+        let js = "window.dispatchEvent(new CustomEvent('native:saveImageResult', { detail: \(json) }));"
+        webView?.evaluateJavaScript(js, completionHandler: nil)
     }
 }

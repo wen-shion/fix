@@ -210,26 +210,32 @@ export function InsforgeAuthProvider({ children }) {
   // Unified display name: cloud custom name > OAuth provider name.
   // Fetched once when user signs in; updated via refreshDisplayName().
   const [cloudDisplayName, setCloudDisplayName] = useState(null);
+  const [displayNameResolved, setDisplayNameResolved] = useState(false);
   const authDisplayName = useMemo(() => pickDisplayNameFromUser(user), [user]);
 
   useEffect(() => {
     if (!user || !client) {
       setCloudDisplayName(null);
+      setDisplayNameResolved(false);
       return;
     }
     let active = true;
     (async () => {
       try {
         const token = await resolveInsforgeClientAccessToken(client);
-        if (!active || !token) return;
+        if (!active || !token) { if (active) setDisplayNameResolved(true); return; }
         const data = await getPublicVisibility({ accessToken: token });
         if (active && data?.display_name) setCloudDisplayName(data.display_name);
       } catch { /* ignore */ }
+      if (active) setDisplayNameResolved(true);
     })();
     return () => { active = false; };
   }, [user, client]);
 
-  const displayName = cloudDisplayName || authDisplayName;
+  // Don't flash the OAuth name before cloud name resolves
+  const displayName = displayNameResolved
+    ? (cloudDisplayName || authDisplayName)
+    : "";
 
   const refreshDisplayName = useCallback(async () => {
     if (!client) return;

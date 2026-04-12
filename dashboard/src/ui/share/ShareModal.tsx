@@ -157,16 +157,39 @@ export function ShareModal({ open, onClose, data, twitterText }: any) {
       setBusy(null);
       return;
     }
-    const copied = await safeWriteClipboardImage(blob);
-    if (!copied) {
-      // Fallback: still let them tweet text, and also trigger a download.
-      downloadBlobAsFile(blob, buildFilename());
+    // In native WKWebView: save image via bridge, then open URL via bridge.
+    // downloadBlobAsFile creates a blob: URL <a> click which navigates the
+    // entire WKWebView away from the dashboard. Avoid it in native context.
+    if (isNativeEmbed()) {
+      const dataUrl = await blobToPngDataUrl(blob);
+      if (dataUrl) {
+        await saveShareImageToDownloads(dataUrl, buildFilename());
+        push(copy("share.toast.downloaded"), "success");
+      }
     } else {
-      push(copy("share.toast.copied"), "success");
+      const copied = await safeWriteClipboardImage(blob);
+      if (!copied) {
+        downloadBlobAsFile(blob, buildFilename());
+      } else {
+        push(copy("share.toast.copied"), "success");
+      }
     }
     const intentUrl = new URL("https://twitter.com/intent/tweet");
     if (twitterText) intentUrl.searchParams.set("text", twitterText);
-    window.open(intentUrl.toString(), "_blank", "noopener,noreferrer");
+    // Use location.href in native embed so WKUIDelegate.createWebView
+    // (which intercepts window.open and opens in system browser) fires.
+    // window.open with _blank sometimes navigates the WKWebView itself.
+    if (isNativeEmbed()) {
+      try {
+        (window as any).webkit?.messageHandlers?.nativeBridge?.postMessage({
+          type: "action", name: "openURL", value: intentUrl.toString(),
+        });
+      } catch {
+        window.open(intentUrl.toString(), "_blank", "noopener,noreferrer");
+      }
+    } else {
+      window.open(intentUrl.toString(), "_blank", "noopener,noreferrer");
+    }
     setBusy(null);
   }, [busy, ensureCardBlob, push, twitterText, buildFilename]);
 
@@ -185,16 +208,23 @@ export function ShareModal({ open, onClose, data, twitterText }: any) {
         if (e.target === e.currentTarget) onClose?.();
       }}
     >
-      {/* Hidden render target for html-to-image — full 1200×1630 */}
+      {/* Hidden render target for html-to-image — full 1200×1630.
+          Uses clip + opacity to hide visually while keeping the element
+          in-layout so WKWebView actually paints it (off-screen positioning
+          with left:-20000 causes WKWebView to skip rendering). */}
       <div
         aria-hidden
         style={{
           position: "fixed",
-          left: -20000,
+          left: 0,
           top: 0,
           width: SHARE_CARD_WIDTH,
           height: SHARE_CARD_HEIGHT,
           pointerEvents: "none",
+          opacity: 0,
+          zIndex: -1,
+          clip: "rect(0,0,0,0)",
+          overflow: "hidden",
         }}
       >
         <ShareCard ref={cardRef} data={cardData} />
@@ -209,15 +239,25 @@ export function ShareModal({ open, onClose, data, twitterText }: any) {
       >
         <div className="flex flex-col lg:flex-row max-h-[92vh]">
           {/* Preview column */}
-          <div className="flex-1 min-w-0 p-5 sm:p-7 bg-oai-gray-50 dark:bg-oai-gray-950 flex items-center justify-center overflow-auto">
+          <div className="flex-1 min-w-0 p-4 sm:p-7 bg-oai-gray-50 dark:bg-oai-gray-950 flex items-center justify-center overflow-auto">
             <div
               style={{
                 width: SHARE_CARD_WIDTH * PREVIEW_SCALE,
                 height: SHARE_CARD_HEIGHT * PREVIEW_SCALE,
+                flexShrink: 0,
                 position: "relative",
               }}
               className="rounded-xl overflow-hidden shadow-oai-md ring-1 ring-black/5"
             >
+              {/* Generating overlay */}
+              {busy ? (
+                <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/70 dark:bg-black/50">
+                  <svg className="animate-spin h-6 w-6 text-oai-gray-500" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                </div>
+              ) : null}
               <div
                 style={{
                   width: SHARE_CARD_WIDTH,
