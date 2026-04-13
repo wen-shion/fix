@@ -5,6 +5,7 @@ import {
   Gauge,
   Trophy,
   LayoutGrid,
+  Globe,
   Settings as SettingsIcon,
   ChevronLeft,
   ChevronRight,
@@ -41,6 +42,7 @@ function getNavGroups() {
       label: copy("nav.group.tools"),
       items: [
         { id: "widgets", to: "/widgets", icon: LayoutGrid, label: copy("nav.widgets") },
+        { id: "ip-check", to: "/ip-check", icon: Globe, label: "Claude IP Check" },
       ],
     },
     {

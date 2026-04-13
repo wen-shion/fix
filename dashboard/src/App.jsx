@@ -52,6 +52,8 @@ const WidgetsPage = React.lazy(() =>
   })),
 );
 
+const IpCheckPage = React.lazy(() => import("./pages/IpCheckPage.jsx"));
+
 export default function App() {
   const location = useLocation();
   const insforge = useInsforgeAuth();
@@ -119,6 +121,10 @@ export default function App() {
   if (isWidgetsPath) {
     gate = "dashboard";
   }
+  const isIpCheckPath = normalizedPath === "/ip-check";
+  if (isIpCheckPath) {
+    gate = "dashboard";
+  }
 
   const PageComponent = leaderboardProfileUserId
     ? LeaderboardProfilePage
@@ -130,7 +136,9 @@ export default function App() {
           ? SettingsPage
           : isWidgetsPath
             ? WidgetsPage
-            : DashboardPage;
+            : isIpCheckPath
+              ? IpCheckPage
+              : DashboardPage;
 
   // /leaderboard/u/:id (LeaderboardProfilePage) still ships its own
   // min-h-screen + sticky header/footer chrome, so it must NOT be wrapped
@@ -144,7 +152,8 @@ export default function App() {
       isLeaderboardIndexPath ||
       isLimitsPath ||
       isSettingsPath ||
-      isWidgetsPath);
+      isWidgetsPath ||
+      isIpCheckPath);
 
   const loadingShell = <div className="min-h-screen bg-oai-white dark:bg-[#050505]" />;
 
