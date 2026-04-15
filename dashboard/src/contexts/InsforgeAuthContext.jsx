@@ -2,7 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import { getOrCreateInsforgeClient, isCloudInsforgeConfigured } from "../lib/insforge-config";
 import { clearCloudDeviceSession } from "../lib/cloud-sync-prefs";
 import { isLikelyExpiredAccessToken } from "../lib/auth-token";
-import { getPublicVisibility, setPublicVisibility } from "../lib/api";
+import { getPublicVisibility } from "../lib/api";
 
 const InsforgeAuthContext = createContext(null);
 
@@ -226,17 +226,6 @@ export function InsforgeAuthProvider({ children }) {
         if (!active || !token) { if (active) setDisplayNameResolved(true); return; }
         const data = await getPublicVisibility({ accessToken: token });
         if (active && data?.display_name) setCloudDisplayName(data.display_name);
-        // Only auto-enable on the very first sign-in: when no settings row
-        // has ever been written, the server returns updated_at === null.
-        // If the user previously disabled it on any device, updated_at will
-        // be set and we must not override their choice.
-        if (active && data?.enabled === false && data?.updated_at == null) {
-          try {
-            await setPublicVisibility({ accessToken: token, enabled: true });
-          } catch (err) {
-            console.warn("[tokentracker] auto-enable public profile failed:", err);
-          }
-        }
       } catch { /* ignore */ }
       if (active) setDisplayNameResolved(true);
     })();

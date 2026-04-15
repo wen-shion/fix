@@ -549,4 +549,3 @@ share.toast.copied,share,DashboardPage,ShareModal,toast_copied,"Image copied to 
 share.toast.downloaded,share,DashboardPage,ShareModal,toast_downloaded,"Image saved",,active
 share.toast.failed,share,DashboardPage,ShareModal,toast_failed,"Couldn't generate image",,active
 share.toast.working,share,DashboardPage,ShareModal,toast_working,"Generating…",,active
-dashboard.account_view.badge,ui,DashboardPage,DashboardView,account_view_badge,"Account view · all devices",,active

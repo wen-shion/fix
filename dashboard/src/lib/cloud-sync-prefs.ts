@@ -14,16 +14,6 @@ export function isLocalDashboardHost(): boolean {
   return h === "localhost" || h === "127.0.0.1";
 }
 
-/** 用户是否显式设置过 cloud sync 偏好（区分「没设过」和「显式关」） */
-export function hasCloudSyncPreference(): boolean {
-  try {
-    const v = localStorage.getItem(KEY_ENABLED);
-    return v !== null && v !== "";
-  } catch {
-    return false;
-  }
-}
-
 /** 默认关闭：需用户手动开启后才同步到云端 */
 export function getCloudSyncEnabled(): boolean {
   try {

@@ -183,9 +183,6 @@ function AccountSection() {
     const next = !cloudSyncOn;
     setCloudSyncEnabled(next);
     setCloudSyncOn(next);
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(new Event("tt.cloudSyncChanged"));
-    }
     if (next) {
       try {
         await runCloudUsageSyncNow(() => getAccessToken());
