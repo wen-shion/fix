@@ -6,15 +6,17 @@ import React from "react";
 export function LeaderboardProviderColumnHeader({ iconSrc, label }) {
   return (
     <span className="inline-flex items-center gap-3">
-      <img
-        src={iconSrc}
-        alt=""
-        width={16}
-        height={16}
-        className={`h-4 w-4 shrink-0 object-contain opacity-90 ${
-          iconSrc === "/brand-logos/cursor.svg" ? "dark:invert" : ""
-        }`}
-      />
+      {iconSrc ? (
+        <img
+          src={iconSrc}
+          alt=""
+          width={16}
+          height={16}
+          className={`h-4 w-4 shrink-0 object-contain opacity-90 ${
+            iconSrc === "/brand-logos/cursor.svg" ? "dark:invert" : ""
+          }`}
+        />
+      ) : null}
       <span className="whitespace-nowrap">{label}</span>
     </span>
   );

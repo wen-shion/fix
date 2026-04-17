@@ -16,6 +16,8 @@ test("mock leaderboard returns entries and me", async () => {
   assert.equal(typeof res.me.cursor_tokens, "string");
   assert.equal(typeof res.me.opencode_tokens, "string");
   assert.equal(typeof res.me.openclaw_tokens, "string");
+  assert.equal(typeof res.me.hermes_tokens, "string");
+  assert.equal(typeof res.me.kiro_tokens, "string");
   assert.equal(typeof res.me.other_tokens, "string");
   assert.equal(typeof res.me.total_tokens, "string");
 

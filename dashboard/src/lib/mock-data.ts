@@ -498,10 +498,12 @@ export function getMockLeaderboard({
     const total = Math.max(0, base + id * 1200);
     const gpt = Math.floor(total * 0.28);
     const claude = Math.floor(total * 0.18);
-    const gemini = Math.floor(total * 0.12);
-    const cursor = Math.floor(total * 0.12);
-    const opencode = Math.floor(total * 0.1);
-    const openclaw = Math.max(0, total - gpt - claude - gemini - cursor - opencode);
+    const gemini = Math.floor(total * 0.1);
+    const cursor = Math.floor(total * 0.1);
+    const opencode = Math.floor(total * 0.08);
+    const hermes = Math.floor(total * 0.03);
+    const kiro = Math.floor(total * 0.02);
+    const openclaw = Math.max(0, total - gpt - claude - gemini - cursor - opencode - hermes - kiro);
     const isPublic = id % 7 !== 0;
     return {
       id,
@@ -516,6 +518,8 @@ export function getMockLeaderboard({
       cursor_tokens: cursor,
       opencode_tokens: opencode,
       openclaw_tokens: openclaw,
+      hermes_tokens: hermes,
+      kiro_tokens: kiro,
       other_tokens: 0,
       total_tokens: total,
     };
@@ -537,7 +541,11 @@ export function getMockLeaderboard({
               ? "opencode_tokens"
               : safeMetric === "openclaw"
                 ? "openclaw_tokens"
-                : "total_tokens";
+                : safeMetric === "hermes"
+                  ? "hermes_tokens"
+                  : safeMetric === "kiro"
+                    ? "kiro_tokens"
+                    : "total_tokens";
 
   const sorted = raw
     .slice()
@@ -554,6 +562,8 @@ export function getMockLeaderboard({
       cursor_tokens: String(entry.cursor_tokens),
       opencode_tokens: String(entry.opencode_tokens),
       openclaw_tokens: String(entry.openclaw_tokens),
+      hermes_tokens: String(entry.hermes_tokens ?? 0),
+      kiro_tokens: String(entry.kiro_tokens ?? 0),
       other_tokens: String(entry.other_tokens ?? 0),
       total_tokens: String(entry.total_tokens),
       is_public: Boolean(entry.is_public),
@@ -569,6 +579,8 @@ export function getMockLeaderboard({
         cursor_tokens: meRow.cursor_tokens,
         opencode_tokens: meRow.opencode_tokens,
         openclaw_tokens: meRow.openclaw_tokens,
+        hermes_tokens: meRow.hermes_tokens,
+        kiro_tokens: meRow.kiro_tokens,
         other_tokens: meRow.other_tokens,
         total_tokens: meRow.total_tokens,
       }
@@ -580,6 +592,8 @@ export function getMockLeaderboard({
         cursor_tokens: "0",
         opencode_tokens: "0",
         openclaw_tokens: "0",
+        hermes_tokens: "0",
+        kiro_tokens: "0",
         other_tokens: "0",
         total_tokens: "0",
       };

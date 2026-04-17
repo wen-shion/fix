@@ -73,6 +73,8 @@ export function injectMeIntoFirstPage({ entries, me, meLabel, limit }) {
     cursor_tokens: me?.cursor_tokens ?? "0",
     opencode_tokens: me?.opencode_tokens ?? "0",
     openclaw_tokens: me?.openclaw_tokens ?? "0",
+    hermes_tokens: me?.hermes_tokens ?? "0",
+    kiro_tokens: me?.kiro_tokens ?? "0",
     other_tokens: me?.other_tokens ?? "0",
     total_tokens: me?.total_tokens ?? "0",
   };

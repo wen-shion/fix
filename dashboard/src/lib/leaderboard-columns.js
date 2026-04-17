@@ -9,9 +9,11 @@ export const LEADERBOARD_TOKEN_COLUMNS = [
   { key: "claude_tokens", copyKey: "leaderboard.column.claude", icon: "/brand-logos/claude-code.svg" },
   { key: "gemini_tokens", copyKey: "leaderboard.column.gemini", icon: "/brand-logos/gemini.svg" },
   { key: "cursor_tokens", copyKey: "leaderboard.column.cursor", icon: "/brand-logos/cursor.svg" },
+  { key: "kiro_tokens", copyKey: "leaderboard.column.kiro", icon: "/brand-logos/kiro.svg" },
   { key: "opencode_tokens", copyKey: "leaderboard.column.opencode", icon: "/brand-logos/opencode.svg" },
   { key: "openclaw_tokens", copyKey: "leaderboard.column.openclaw", icon: "/brand-logos/openclaw.svg" },
-  { key: "other_tokens", copyKey: "leaderboard.column.supplemental", icon: "/brand-logos/gemini.svg" },
+  { key: "hermes_tokens", copyKey: "leaderboard.column.hermes", icon: null },
+  { key: "other_tokens", copyKey: "leaderboard.column.supplemental", icon: null },
 ];
 
 /** Rank column width matches `left` offset of the second sticky column */

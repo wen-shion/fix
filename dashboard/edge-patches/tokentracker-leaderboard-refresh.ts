@@ -124,6 +124,8 @@ const SOURCE_COLUMN_MAP: Record<string, string> = {
   cursor: "cursor_tokens",
   opencode: "opencode_tokens",
   openclaw: "openclaw_tokens",
+  hermes: "hermes_tokens",
+  kiro: "kiro_tokens",
 };
 
 interface DateRange {
@@ -171,6 +173,8 @@ interface UserAgg {
   cursor_tokens: number;
   opencode_tokens: number;
   openclaw_tokens: number;
+  hermes_tokens: number;
+  kiro_tokens: number;
   other_tokens: number;
   total_tokens: number;
   estimated_cost_usd: number;
@@ -184,6 +188,8 @@ function newUserAgg(): UserAgg {
     cursor_tokens: 0,
     opencode_tokens: 0,
     openclaw_tokens: 0,
+    hermes_tokens: 0,
+    kiro_tokens: 0,
     other_tokens: 0,
     total_tokens: 0,
     estimated_cost_usd: 0,
@@ -368,6 +374,8 @@ export default async function (req: Request): Promise<Response> {
         cursor_tokens: agg.cursor_tokens,
         opencode_tokens: agg.opencode_tokens,
         openclaw_tokens: agg.openclaw_tokens,
+        hermes_tokens: agg.hermes_tokens,
+        kiro_tokens: agg.kiro_tokens,
         other_tokens: agg.other_tokens,
         total_tokens: agg.total_tokens,
         estimated_cost_usd: Math.round(agg.estimated_cost_usd * 100) / 100,

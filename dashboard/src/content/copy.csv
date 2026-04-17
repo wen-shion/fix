@@ -388,7 +388,11 @@ leaderboard.column.gemini,dashboard,LeaderboardPage,LeaderboardPage,column_gemin
 leaderboard.column.cursor,dashboard,LeaderboardPage,LeaderboardPage,column_cursor,"Cursor",,active
 leaderboard.column.opencode,dashboard,LeaderboardPage,LeaderboardPage,column_opencode,"OpenCode",,active
 leaderboard.column.openclaw,dashboard,LeaderboardPage,LeaderboardPage,column_openclaw,"OpenClaw",,active
+leaderboard.column.hermes,dashboard,LeaderboardPage,LeaderboardPage,column_hermes,"Hermes",,active
+leaderboard.column.kiro,dashboard,LeaderboardPage,LeaderboardPage,column_kiro,"Kiro",,active
 leaderboard.column.supplemental,dashboard,LeaderboardPage,LeaderboardPage,column_supplemental,"Supplemental",,active
+leaderboard.columns.reset,dashboard,LeaderboardPage,LeaderboardPage,columns_reset,"Reset columns",,active
+leaderboard.columns.reset_hint,dashboard,LeaderboardPage,LeaderboardPage,columns_reset_hint,"Restore default column order",,active
 
 landing.oauth.google,landing,LandingPage,MarketingLanding,oauth_google,"Continue with Google",,active
 landing.oauth.github,landing,LandingPage,MarketingLanding,oauth_github,"Continue with GitHub",,active

@@ -1,5 +1,19 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, Link } from "react-router-dom";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import { restrictToHorizontalAxis } from "@dnd-kit/modifiers";
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  sortableKeyboardCoordinates,
+} from "@dnd-kit/sortable";
 import { useInsforgeAuth } from "../contexts/InsforgeAuthContext.jsx";
 import { useLoginModal } from "../contexts/LoginModalContext.jsx";
 import { isAccessTokenReady, resolveAuthAccessTokenWithRetry } from "../lib/auth-token";
@@ -24,6 +38,8 @@ import { runCloudUsageSyncNow } from "../lib/cloud-sync";
 import { LeaderboardAvatar } from "../components/LeaderboardAvatar.jsx";
 import { LeaderboardProviderColumnHeader } from "../components/LeaderboardProviderColumnHeader.jsx";
 import { LeaderboardSkeleton } from "../components/LeaderboardSkeleton.jsx";
+import { SortableColumnHeader } from "../components/SortableColumnHeader.jsx";
+import { useColumnOrder } from "../hooks/use-column-order.js";
 import {
   LB_STICKY_TH_RANK,
   LB_STICKY_TH_USER,
@@ -42,15 +58,19 @@ function formatCost(value) {
   return `$${n.toFixed(2)}`;
 }
 
-function leaderboardTokenCells(entry, isMe) {
+function leaderboardTokenCells(entry, isMe, orderedColumns) {
   const numCls = isMe
     ? "text-oai-gray-700 dark:text-oai-gray-300"
     : "text-oai-gray-500 dark:text-oai-gray-400";
   const cellBg = isMe
     ? "bg-oai-brand-50 dark:bg-oai-brand-900/10"
     : "bg-white dark:bg-oai-gray-950 group-hover:bg-oai-gray-50 dark:group-hover:bg-oai-gray-900/60";
-  return LEADERBOARD_TOKEN_COLUMNS.map((col) => (
-    <td key={col.key} className={cn("px-4 py-4 whitespace-nowrap text-right tabular-nums", numCls, cellBg)}>
+  return orderedColumns.map((col) => (
+    <td
+      key={col.key}
+      data-column-key={col.key}
+      className={cn("px-4 py-4 whitespace-nowrap text-right tabular-nums", numCls, cellBg)}
+    >
       {toDisplayNumber(entry?.[col.key])}
     </td>
   ));
@@ -142,6 +162,40 @@ export function LeaderboardPage({
   const authTokenReady = authTokenAllowed && isAccessTokenReady(effectiveAuthToken);
 
   const placeholder = copy("shared.placeholder.short");
+
+  const defaultColumnKeys = useMemo(
+    () => LEADERBOARD_TOKEN_COLUMNS.map((c) => c.key),
+    [],
+  );
+  const { order: columnOrder, reorder: reorderColumns, reset: resetColumns } =
+    useColumnOrder(defaultColumnKeys);
+  const columnsByKey = useMemo(() => {
+    const map = new Map();
+    for (const c of LEADERBOARD_TOKEN_COLUMNS) map.set(c.key, c);
+    return map;
+  }, []);
+  const orderedColumns = useMemo(
+    () => columnOrder.map((k) => columnsByKey.get(k)).filter(Boolean),
+    [columnOrder, columnsByKey],
+  );
+  const isDefaultOrder = useMemo(
+    () => columnOrder.every((k, i) => k === defaultColumnKeys[i]),
+    [columnOrder, defaultColumnKeys],
+  );
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+  const handleDragEnd = useCallback(
+    (event) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      reorderColumns(String(active.id), String(over.id));
+    },
+    [reorderColumns],
+  );
+
   const [listPage, setListPage] = useState(1);
   const [listReloadToken, setListReloadToken] = useState(0);
   const [listState, setListState] = useState(() => ({
@@ -295,6 +349,12 @@ export function LeaderboardPage({
     );
   } else if (hasEntries) {
     listBody = (
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        modifiers={[restrictToHorizontalAxis]}
+        onDragEnd={handleDragEnd}
+      >
       <div className="w-full overflow-x-auto">
         <table className="min-w-max w-full text-left text-sm">
           <thead className="border-b border-oai-gray-200 dark:border-oai-gray-800">
@@ -311,13 +371,17 @@ export function LeaderboardPage({
               <th className="px-4 py-4 text-[11px] font-semibold uppercase tracking-wider text-oai-gray-400 dark:text-oai-gray-500 whitespace-nowrap text-right align-middle" title="Based on estimated API pricing, not actual billing">
                 Est. Cost
               </th>
-              {LEADERBOARD_TOKEN_COLUMNS.map((col) => (
-                <th key={col.key} className="px-4 py-4 text-[11px] font-semibold uppercase tracking-wider text-oai-gray-400 dark:text-oai-gray-500 whitespace-nowrap align-middle">
-                  <div className="flex items-center justify-end gap-2">
+              <SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>
+                {orderedColumns.map((col) => (
+                  <SortableColumnHeader
+                    key={col.key}
+                    id={col.key}
+                    thClassName="px-4 py-4 text-[11px] font-semibold uppercase tracking-wider text-oai-gray-400 dark:text-oai-gray-500 whitespace-nowrap align-middle"
+                  >
                     <LeaderboardProviderColumnHeader iconSrc={col.icon} label={copy(col.copyKey)} />
-                  </div>
-                </th>
-              ))}
+                  </SortableColumnHeader>
+                ))}
+              </SortableContext>
             </tr>
           </thead>
           <tbody className="divide-y divide-oai-gray-100 dark:divide-oai-gray-800/50">
@@ -358,7 +422,7 @@ export function LeaderboardPage({
                     <td className="px-4 py-4 font-medium text-oai-brand-600 dark:text-oai-brand-400 whitespace-nowrap text-right tabular-nums bg-oai-brand-50 dark:bg-oai-brand-900/10" title="Based on estimated API pricing, not actual billing">
                       {formatCost(entry?.estimated_cost_usd)}
                     </td>
-                    {leaderboardTokenCells(entry, true)}
+                    {leaderboardTokenCells(entry, true, orderedColumns)}
                   </tr>
                 );
               }
@@ -387,13 +451,14 @@ export function LeaderboardPage({
                   <td className="px-4 py-4 text-oai-gray-500 dark:text-oai-gray-400 whitespace-nowrap text-right tabular-nums bg-white dark:bg-oai-gray-950 group-hover:bg-oai-gray-50 dark:group-hover:bg-oai-gray-900/60" title="Based on estimated API pricing, not actual billing">
                     {formatCost(entry?.estimated_cost_usd)}
                   </td>
-                  {leaderboardTokenCells(entry, false)}
+                  {leaderboardTokenCells(entry, false, orderedColumns)}
                 </tr>
               );
             })}
           </tbody>
         </table>
       </div>
+      </DndContext>
     );
   } else {
     listBody = (
@@ -464,6 +529,15 @@ export function LeaderboardPage({
             </div>
 
             <div className="flex items-center gap-3">
+              {!isDefaultOrder && (
+                <button
+                  onClick={resetColumns}
+                  title={copy("leaderboard.columns.reset_hint")}
+                  className="text-xs text-oai-gray-500 dark:text-oai-gray-400 hover:text-oai-black dark:hover:text-white transition-colors"
+                >
+                  {copy("leaderboard.columns.reset")}
+                </button>
+              )}
               {authTokenAllowed && authTokenReady && (
                 <button
                   onClick={handleRefresh}
