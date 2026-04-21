@@ -107,8 +107,19 @@ final class UpdateChecker {
             let current = currentVersion()
             if compareVersions(current, release.tagVersion) == .orderedAscending {
                 if silent, let dmg = release.dmgAsset {
+                    // Loop guard: if we just silently installed this exact release but
+                    // the app still reports itself as older, the downloaded DMG's
+                    // Info.plist is out of sync with the git tag (issue #34 / 0.5.77).
+                    // Reinstalling would copy the same broken DMG on every relaunch
+                    // forever — skip instead and surface the problem via statusText.
+                    if isRecentlyInstalled(release.tagVersion) {
+                        finishUpdate()
+                        statusText = "Auto-update skipped: \(release.tagVersion) reports as \(current). Reinstall manually."
+                        Swift.print("[UpdateChecker] Silent install loop averted: target=\(release.tagVersion), current=\(current)")
+                        return
+                    }
                     // Silent auto-update: download and install without prompting
-                    startDownloadAndInstall(dmg)
+                    startDownloadAndInstall(dmg, targetVersion: release.tagVersion)
                 } else {
                     promptUpdate(release: release, currentVersion: current)
                 }
@@ -155,6 +166,39 @@ final class UpdateChecker {
         return .orderedSame
     }
 
+    // MARK: - Loop Protection
+
+    /// Persisted identity of the most recent DMG that `mountCopyRelaunch` finished
+    /// copying into `/Applications`. The silent `check()` path consults this to
+    /// detect an install loop: if the tag it just fetched matches what we freshly
+    /// installed *and* the app still reports an older `CFBundleShortVersionString`,
+    /// the DMG's Info.plist MARKETING_VERSION is out of sync with the git tag
+    /// (root cause of issue #34 / 0.5.77) and reinstalling would loop forever.
+    private static let lastInstalledVersionKey = "UpdateChecker.lastInstalledVersion"
+    private static let lastInstalledAtKey = "UpdateChecker.lastInstalledAt"
+
+    /// How long after a successful install we treat "please install the same
+    /// version again" as a loop rather than a legitimate reinstall request.
+    /// Long enough to survive the next launch's silent check, short enough that
+    /// a deliberate reinstall hours later still goes through.
+    private let loopGuardWindow: TimeInterval = 10 * 60
+
+    private func recordInstalledVersion(_ version: String) {
+        let d = UserDefaults.standard
+        d.set(version, forKey: Self.lastInstalledVersionKey)
+        d.set(Date().timeIntervalSince1970, forKey: Self.lastInstalledAtKey)
+    }
+
+    private func isRecentlyInstalled(_ version: String) -> Bool {
+        let d = UserDefaults.standard
+        guard let last = d.string(forKey: Self.lastInstalledVersionKey), last == version else {
+            return false
+        }
+        let at = d.double(forKey: Self.lastInstalledAtKey)
+        guard at > 0 else { return false }
+        return (Date().timeIntervalSince1970 - at) < loopGuardWindow
+    }
+
     // MARK: - UI
 
     private func promptUpdate(release: GitHubRelease, currentVersion: String) {
@@ -172,7 +216,7 @@ final class UpdateChecker {
         presentAlert(alert) { response in
             if response == .alertFirstButtonReturn {
                 if let dmg = release.dmgAsset {
-                    self.startDownloadAndInstall(dmg)
+                    self.startDownloadAndInstall(dmg, targetVersion: release.tagVersion)
                 } else if let url = URL(string: release.html_url) {
                     NSWorkspace.shared.open(url)
                 }
@@ -194,7 +238,7 @@ final class UpdateChecker {
 
     // MARK: - Download + Install (URLSession for proxy support)
 
-    private func startDownloadAndInstall(_ asset: GitHubRelease.Asset) {
+    private func startDownloadAndInstall(_ asset: GitHubRelease.Asset, targetVersion: String) {
         isBusy = true
         let totalSize = Int64(asset.size)
         let totalMB = Double(totalSize) / 1_048_576
@@ -257,7 +301,7 @@ final class UpdateChecker {
                 switch result {
                 case .success(let dmgURL):
                     self.statusText = "Installing..."
-                    self.performInstallAsync(dmgURL)
+                    self.performInstallAsync(dmgURL, targetVersion: targetVersion)
                 case .failure(let error):
                     self.finishUpdate()
                     self.showAlert(
@@ -275,7 +319,7 @@ final class UpdateChecker {
         delegate.startDownload(session: session, url: url)
     }
 
-    private func performInstallAsync(_ dmgURL: URL) {
+    private func performInstallAsync(_ dmgURL: URL, targetVersion: String) {
         let dmgPath = dmgURL.path
         Task.detached { [self] in
             let result: Result<URL, Error>
@@ -288,6 +332,7 @@ final class UpdateChecker {
             await MainActor.run {
                 switch result {
                 case .success(let appURL):
+                    self.recordInstalledVersion(targetVersion)
                     self.statusText = "Restarting..."
                     self.relaunch(appURL: appURL)
                 case .failure(let error):
