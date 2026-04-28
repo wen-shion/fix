@@ -263,6 +263,11 @@ final class StatusBarController: NSObject {
         guard let button = statusItem.button else { return }
         let displayItems = buildMenuBarDisplayValues()
 
+        // popover 显示期间冻结 statusItem.length：4 条数据 publisher 与 MenuBarAnimator 帧动画都会
+        // 触发本方法，length 反复重设会让 status item 宽度抖动并把 popover 锚点拖着整体平移。
+        // popover 关闭后由 didCloseNotification 监听器再调一次本方法把宽度对齐到最新值。
+        let canResizeStatusItem = !popover.isShown
+
         if showStats && !displayItems.isEmpty {
             let compositeImage = makeDisplayMenuBarImage(
                 icon: animator?.currentImage ?? button.image,
@@ -273,12 +278,16 @@ final class StatusBarController: NSObject {
             button.attributedTitle = emptyAttributedTitle
             button.imagePosition = .imageOnly
             button.image = compositeImage
-            statusItem.length = compositeImage.size.width
+            if canResizeStatusItem {
+                statusItem.length = compositeImage.size.width
+            }
         } else {
             button.title = ""
             button.attributedTitle = emptyAttributedTitle
             button.imagePosition = .imageOnly
-            statusItem.length = NSStatusItem.squareLength
+            if canResizeStatusItem {
+                statusItem.length = NSStatusItem.squareLength
+            }
             animator?.applyCurrentState()
         }
     }
@@ -439,6 +448,15 @@ final class StatusBarController: NSObject {
 
         popover.contentViewController = NSHostingController(rootView: rootView)
         popover.behavior = .transient
+
+        // popover 关闭后把 statusItem.length 对齐到最新合成图宽度（显示期间被冻结）。
+        NotificationCenter.default.addObserver(
+            forName: NSPopover.didCloseNotification,
+            object: popover,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateStatsDisplay()
+        }
     }
 
     // MARK: - Click Handling
