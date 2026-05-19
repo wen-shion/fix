@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-05-17T15:02:22.188Z",
+  "generatedAt": "2026-05-19T07:53:35.292Z",
   "root": "dashboard/src",
   "rules": {
     "colors": "hex/rgb(a) literals",
@@ -149,7 +149,7 @@
         "); const labelInner = (",
         "); const labelSuffix = isSystemPrefix ? (",
         "0 && (",
-        "0 || codexQueueFallback)) || (isCustomAgents && hasCustomAgents && subagentsSet); const rowOpen = Boolean(openRows[cat.key]); const bucketBase = bucketColor(cat.key, source); const colorSquare = (",
+        "0 || codexQueueFallback)) || (isCustomAgents && hasCustomAgents && subagentsSet) || (isMcpServers && Boolean(mcpServersSet?.categories?.length)); const rowOpen = Boolean(openRows[cat.key]); const bucketBase = bucketColor(cat.key, source); const colorSquare = (",
         "0; const clampedShare = hasFill ? Math.max(0, Math.min(100, share)) : 0; return (",
         "isExecToolName(t.name)); const catOpen = Boolean(openCats[cat.name]); return ("
       ]

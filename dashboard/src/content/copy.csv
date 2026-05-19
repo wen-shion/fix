@@ -546,6 +546,7 @@ dashboard.context_breakdown.footnote_codex,dashboard,DashboardPage,ContextBreakd
 dashboard.context_breakdown.category.system_prompt,dashboard,DashboardPage,ContextBreakdownPanel,cat,"System prompt",,active
 dashboard.context_breakdown.category.messages,dashboard,DashboardPage,ContextBreakdownPanel,cat,"Messages",,active
 dashboard.context_breakdown.category.tool_calls,dashboard,DashboardPage,ContextBreakdownPanel,cat,"Tool calls",,active
+dashboard.context_breakdown.category.mcp_servers,dashboard,DashboardPage,ContextBreakdownPanel,cat,"MCP servers",,active
 dashboard.context_breakdown.category.custom_agents,dashboard,DashboardPage,ContextBreakdownPanel,cat,"Custom agents",,active
 dashboard.context_breakdown.category.reasoning,dashboard,DashboardPage,ContextBreakdownPanel,cat,"Reasoning",,active
 dashboard.context_breakdown.category.skills,dashboard,DashboardPage,ContextBreakdownPanel,cat,"Skills",,active

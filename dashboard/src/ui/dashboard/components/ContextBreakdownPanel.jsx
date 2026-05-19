@@ -29,6 +29,7 @@ const BUCKET_RAMP = {
   system_prompt: { l: 0.55, c: 0.05 },
   messages: { l: 0.65, c: 0.18 },
   tool_calls: { l: 0.6, c: 0.14 },
+  mcp_servers: { l: 0.5, c: 0.12 },
   custom_agents: { l: 0.55, c: 0.1 },
   reasoning: { l: 0.7, c: 0.08 },
 };
@@ -163,6 +164,71 @@ function buildCodexDisplayCategories(data, referenceTotalTokens = null) {
     },
   ];
   return normalizeDisplayGroups(groups, referenceTotalTokens);
+}
+
+// Hoist categories whose name starts with the MCP_PREFIX out of a tool-calls
+// set into a sibling set. The backend categorizer in src/lib/categorizer-utils
+// already buckets each mcp__SERVER__tool call into a category named
+// `${MCP_PREFIX}SERVER`, so server identity is preserved without re-parsing
+// tool names. Returns the MCP set, the residual non-MCP set, and the summed
+// MCP token total for adjusting the parent display group.
+const MCP_PREFIX = "MCP: ";
+
+function partitionMcpFromToolCalls(toolCallsSet) {
+  if (!toolCallsSet?.categories?.length) {
+    return { mcpSet: null, residualSet: toolCallsSet, mcpTotalTokens: 0 };
+  }
+  const mcpCategories = [];
+  const residualCategories = [];
+  let mcpTotalTokens = 0;
+  for (const cat of toolCallsSet.categories) {
+    const name = String(cat?.name || "");
+    if (name.startsWith(MCP_PREFIX)) {
+      mcpCategories.push({ ...cat, name: name.slice(MCP_PREFIX.length) });
+      mcpTotalTokens += Number(cat?.totals?.total_tokens || 0);
+    } else {
+      residualCategories.push(cat);
+    }
+  }
+  if (mcpCategories.length === 0) {
+    return { mcpSet: null, residualSet: toolCallsSet, mcpTotalTokens: 0 };
+  }
+  mcpCategories.sort((a, b) => (b.totals?.total_tokens || 0) - (a.totals?.total_tokens || 0));
+  return {
+    mcpSet: { ...toolCallsSet, categories: mcpCategories },
+    residualSet: { ...toolCallsSet, categories: residualCategories },
+    mcpTotalTokens,
+  };
+}
+
+// Move MCP tokens out of the "tool_calls" display group and into a new
+// "mcp_servers" display group, preserving the panel's total-tokens invariant
+// (the grand total is unchanged — tokens just shift bucket). Re-sorts by
+// total_tokens to match the panel's "largest float to top" rule.
+function rebucketMcpInDisplayCategories(displayCats, mcpTotalTokens) {
+  if (!Array.isArray(displayCats) || !(mcpTotalTokens > 0)) return displayCats;
+  const toolCallsOrig = displayCats.find((c) => c.key === "tool_calls");
+  const origTotal = Number(toolCallsOrig?.totals?.total_tokens || 0);
+  const origPercent = Number(toolCallsOrig?.percent || 0);
+  if (!(origTotal > 0)) return displayCats;
+  const safeMcp = Math.min(mcpTotalTokens, origTotal);
+  const adjusted = displayCats.map((c) => {
+    if (c.key !== "tool_calls") return c;
+    const newTotal = origTotal - safeMcp;
+    const ratio = newTotal / origTotal;
+    return {
+      ...c,
+      totals: { ...c.totals, total_tokens: newTotal },
+      percent: Number((origPercent * ratio).toFixed(2)),
+    };
+  });
+  const mcpPercent = Number((origPercent * (safeMcp / origTotal)).toFixed(2));
+  adjusted.push({
+    key: "mcp_servers",
+    totals: { total_tokens: safeMcp },
+    percent: mcpPercent,
+  });
+  return adjusted.sort((a, b) => (b.totals?.total_tokens || 0) - (a.totals?.total_tokens || 0));
 }
 
 function categoryLabel(key) {
@@ -723,7 +789,7 @@ export function ContextBreakdownPanel({ from, to, source = "claude", referenceTo
     );
   }
 
-  const categories =
+  const rawCategories =
     source === "claude"
       ? buildDisplayCategories(data.categories || [], referenceTotalTokens)
       : buildCodexDisplayCategories(data, referenceTotalTokens);
@@ -736,10 +802,15 @@ export function ContextBreakdownPanel({ from, to, source = "claude", referenceTo
   const messageRows = normalizeMessageRows(messageDetails?.categories || []);
   const codexQueueFallback = source === "codex" && (data?.breakdown_status === "queue_fallback" || data?.fallback === "queue_totals");
 
-  // The tool set for the top-level "tool_calls" row
-  const toolCallsSet = source === "claude"
+  // The tool set for the top-level "tool_calls" row. Hoist MCP categories
+  // out into their own sibling set so they can drive a separate top-level
+  // disclosure row — the backend already groups by `MCP: <server>`.
+  const rawToolCallsSet = source === "claude"
     ? toolDetails?.tool_calls || null
     : toolDetails || null;
+  const { mcpSet: mcpServersSet, residualSet: toolCallsSet, mcpTotalTokens } =
+    partitionMcpFromToolCalls(rawToolCallsSet);
+  const categories = rebucketMcpInDisplayCategories(rawCategories, mcpTotalTokens);
   // The tool set for the "custom_agents" row
   const subagentsSet = source === "claude"
     ? toolDetails?.subagents || null
@@ -775,12 +846,14 @@ export function ContextBreakdownPanel({ from, to, source = "claude", referenceTo
           const isMessages = cat.key === "messages";
           const isToolCalls = cat.key === "tool_calls";
           const isCustomAgents = cat.key === "custom_agents";
+          const isMcpServers = cat.key === "mcp_servers";
           const isReasoning = cat.key === "reasoning";
 
           const hasChevron =
             (isMessages && messageRows.length > 0) ||
             (isToolCalls && (toolCallsSet?.categories?.length > 0 || codexQueueFallback)) ||
-            (isCustomAgents && hasCustomAgents && subagentsSet);
+            (isCustomAgents && hasCustomAgents && subagentsSet) ||
+            (isMcpServers && Boolean(mcpServersSet?.categories?.length));
 
           const rowOpen = Boolean(openRows[cat.key]);
           const bucketBase = bucketColor(cat.key, source);
@@ -862,6 +935,16 @@ export function ContextBreakdownPanel({ from, to, source = "claude", referenceTo
               {isCustomAgents && subagentsSet && (
                 <ToolCallsExpanded
                   toolSet={subagentsSet}
+                  execDetails={null}
+                  source={source}
+                  codexQueueFallback={false}
+                />
+              )}
+
+              {/* MCP servers disclosure content */}
+              {isMcpServers && mcpServersSet && (
+                <ToolCallsExpanded
+                  toolSet={mcpServersSet}
                   execDetails={null}
                   source={source}
                   codexQueueFallback={false}

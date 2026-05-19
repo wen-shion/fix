@@ -280,7 +280,7 @@ describe("ContextBreakdownPanel", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("shows short Codex MCP tool names in tool details inline", async () => {
+  it("hoists Codex MCP categories into a top-level MCP servers row", async () => {
     getUsageCategoryBreakdown.mockResolvedValueOnce({
       source: "codex",
       scope: "supported",
@@ -331,18 +331,21 @@ describe("ContextBreakdownPanel", () => {
 
     render(<ContextBreakdownPanel from="2026-05-09" to="2026-05-09" source="codex" />);
 
-    await screen.findByText(copy("dashboard.context_breakdown.category.tool_calls"));
-    // Click the tool calls disclosure button
-    fireEvent.click(screen.getByRole("button", { name: copy("dashboard.context_breakdown.category.tool_calls") }));
+    // New top-level MCP servers row replaces the in-tool_calls MCP category
+    await screen.findByText(copy("dashboard.context_breakdown.category.mcp_servers"));
 
-    // MCP category appears
-    expect(await screen.findByText("MCP: chrome-devtools")).toBeInTheDocument();
+    // Click the MCP servers disclosure to reveal per-server sub-categories
+    fireEvent.click(
+      screen.getByRole("button", { name: copy("dashboard.context_breakdown.category.mcp_servers") }),
+    );
 
-    // Expand the category to see the tool
-    fireEvent.click(screen.getByRole("button", { name: "MCP: chrome-devtools" }));
+    // Server name appears without the "MCP: " prefix
+    expect(await screen.findByText("chrome-devtools")).toBeInTheDocument();
+    expect(screen.queryByText("MCP: chrome-devtools")).not.toBeInTheDocument();
 
+    // Expand the server to see the tool
+    fireEvent.click(screen.getByRole("button", { name: "chrome-devtools" }));
     expect(await screen.findByText(/emulate/)).toBeInTheDocument();
-    expect(screen.queryByText("chrome-devtools/emulate")).not.toBeInTheDocument();
   });
 
   it("shows skills disclosure row when the breakdown includes them", async () => {
@@ -403,7 +406,7 @@ describe("ContextBreakdownPanel", () => {
     expect(await screen.findByText("frontend-design")).toBeInTheDocument();
   });
 
-  it("shows short Claude MCP tool names in inline tool details", async () => {
+  it("hoists Claude MCP categories into a top-level MCP servers row with short tool names", async () => {
     getUsageCategoryBreakdown.mockResolvedValueOnce({
       source: "claude",
       scope: "supported",
@@ -469,15 +472,92 @@ describe("ContextBreakdownPanel", () => {
 
     render(<ContextBreakdownPanel from="2026-05-09" to="2026-05-09" source="claude" />);
 
-    await screen.findByText(copy("dashboard.context_breakdown.category.tool_calls"));
-    // Expand tool calls
-    fireEvent.click(screen.getByRole("button", { name: copy("dashboard.context_breakdown.category.tool_calls") }));
+    // MCP servers row appears at the top level (hoisted out of tool_calls)
+    await screen.findByText(copy("dashboard.context_breakdown.category.mcp_servers"));
+    fireEvent.click(
+      screen.getByRole("button", { name: copy("dashboard.context_breakdown.category.mcp_servers") }),
+    );
 
-    // Expand the MCP category
-    fireEvent.click(await screen.findByRole("button", { name: "MCP: chrome-devtools" }));
+    // Server appears with "MCP: " prefix stripped
+    expect(await screen.findByText("chrome-devtools")).toBeInTheDocument();
+    expect(screen.queryByText("MCP: chrome-devtools")).not.toBeInTheDocument();
 
+    // Expand server, see short tool name
+    fireEvent.click(screen.getByRole("button", { name: "chrome-devtools" }));
     expect(await screen.findByText(/emulate/)).toBeInTheDocument();
     expect(screen.queryByText("mcp__chrome-devtools__emulate")).not.toBeInTheDocument();
+  });
+
+  it("splits tool_calls and MCP servers totals so grand-total stays invariant", async () => {
+    getUsageCategoryBreakdown.mockResolvedValueOnce({
+      source: "claude",
+      scope: "supported",
+      totals: {
+        input_tokens: 0,
+        cached_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        output_tokens: 500,
+        reasoning_output_tokens: 0,
+        total_tokens: 500,
+      },
+      categories: [
+        {
+          key: "tool_calls",
+          totals: {
+            input_tokens: 0,
+            cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            output_tokens: 500,
+            reasoning_output_tokens: 0,
+            total_tokens: 500,
+          },
+          percent: 100,
+        },
+      ],
+      session_count: 1,
+      message_count: 1,
+      tool_calls_breakdown: {
+        tool_calls: {
+          total_calls: 3,
+          categories: [
+            {
+              name: "File Ops",
+              calls: 1,
+              totals: { total_tokens: 200 },
+              tools: [{ name: "Read", calls: 1, totals: { total_tokens: 200 } }],
+            },
+            {
+              name: "MCP: feishu",
+              calls: 2,
+              totals: { total_tokens: 300 },
+              tools: [{ name: "mcp__feishu__list", calls: 2, totals: { total_tokens: 300 } }],
+            },
+          ],
+        },
+        subagents: { total_calls: 0, categories: [] },
+      },
+    });
+
+    render(<ContextBreakdownPanel from="2026-05-09" to="2026-05-09" source="claude" />);
+
+    // tool_calls row keeps only the non-MCP portion (200 tokens, 40%)
+    const toolCallsRow = (
+      await screen.findByText(copy("dashboard.context_breakdown.category.tool_calls"))
+    ).closest("li");
+    expect(toolCallsRow).toHaveTextContent("40.0%");
+
+    // MCP servers row carries the hoisted portion (300 tokens, 60%)
+    const mcpRow = screen
+      .getByText(copy("dashboard.context_breakdown.category.mcp_servers"))
+      .closest("li");
+    expect(mcpRow).toHaveTextContent("60.0%");
+
+    // tool_calls disclosure still works for the residual non-MCP category
+    fireEvent.click(
+      screen.getByRole("button", { name: copy("dashboard.context_breakdown.category.tool_calls") }),
+    );
+    expect(await screen.findByText("File Ops")).toBeInTheDocument();
+    expect(screen.queryByText("MCP: feishu")).not.toBeInTheDocument();
   });
 
   it("shows Claude execution drill-down inline when Bash tool is expanded", async () => {
