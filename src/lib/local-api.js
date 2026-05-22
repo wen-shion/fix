@@ -674,6 +674,7 @@ function createLocalApiHandler({ queuePath }) {
   // Server-side cookie relay: captures auth cookies from InsForge cloud responses
   // so that both browser and WKWebView share the same login session via the proxy.
   // Persisted to disk so cookies survive server restarts.
+  const csrfRelayCookieName = "insforge_csrf_token";
   let relayCookies = new Map();
   const localAuthToken = crypto.randomBytes(24).toString("hex");
   const trackerDataDir = path.join(os.homedir(), ".tokentracker", "tracker");
@@ -750,6 +751,49 @@ function createLocalApiHandler({ queuePath }) {
           changed = true;
           console.log(`[LocalAPI] Cookie captured: ${name}`);
         }
+      }
+    }
+    if (changed) persistRelayCookies();
+  }
+
+  function getRelayCookieValue(name, { decode = false } = {}) {
+    const raw = relayCookies.get(name);
+    if (!raw || typeof raw !== "string") return "";
+    const pair = raw.split(";")[0] || "";
+    const eqIdx = pair.indexOf("=");
+    if (eqIdx < 1) return "";
+    const value = pair.substring(eqIdx + 1).trim();
+    if (!decode) return value;
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return value;
+    }
+  }
+
+  function captureAuthTokensFromBody(bodyBuffer, contentType) {
+    if (!bodyBuffer || !String(contentType || "").toLowerCase().includes("application/json")) return;
+    let parsed = null;
+    try {
+      parsed = JSON.parse(bodyBuffer.toString("utf8"));
+    } catch {
+      return;
+    }
+    let changed = false;
+    const token = typeof parsed?.csrfToken === "string" ? parsed.csrfToken.trim() : "";
+    if (token) {
+      const cookie = `${csrfRelayCookieName}=${encodeURIComponent(token)}; Path=/; SameSite=Lax`;
+      if (relayCookies.get(csrfRelayCookieName) !== cookie) {
+        relayCookies.set(csrfRelayCookieName, cookie);
+        changed = true;
+      }
+    }
+    const refreshToken = typeof parsed?.refreshToken === "string" ? parsed.refreshToken.trim() : "";
+    if (refreshToken) {
+      const cookie = `insforge_refresh_token=${encodeURIComponent(refreshToken)}; Path=/; HttpOnly; SameSite=Lax`;
+      if (relayCookies.get("insforge_refresh_token") !== cookie) {
+        relayCookies.set("insforge_refresh_token", cookie);
+        changed = true;
       }
     }
     if (changed) persistRelayCookies();
@@ -852,25 +896,48 @@ function createLocalApiHandler({ queuePath }) {
         }
         const hasClientCookie = normalizeCookieHeader(proxyHeaders["cookie"]).trim().length > 0;
         const hasCsrfHeader = typeof proxyHeaders["x-csrf-token"] === "string" && proxyHeaders["x-csrf-token"].trim().length > 0;
-        const shouldInjectRelayCookies =
-          p !== "/api/auth/refresh" || hasClientCookie || hasCsrfHeader;
+        const relayCsrfToken = getRelayCookieValue(csrfRelayCookieName);
+        if (p === "/api/auth/refresh" && !hasCsrfHeader && relayCsrfToken) {
+          proxyHeaders["x-csrf-token"] = relayCsrfToken;
+        }
+        const hasEffectiveCsrfHeader =
+          hasCsrfHeader ||
+          (typeof proxyHeaders["x-csrf-token"] === "string" && proxyHeaders["x-csrf-token"].trim().length > 0);
+        let shouldInjectRelayCookies =
+          p !== "/api/auth/refresh" || hasClientCookie || hasEffectiveCsrfHeader;
+        const relayRefreshToken = getRelayCookieValue("insforge_refresh_token", { decode: true });
+        const shouldUseRelayRefreshFallback =
+          p === "/api/auth/refresh" && !hasClientCookie && !hasEffectiveCsrfHeader && relayRefreshToken;
+        if (shouldUseRelayRefreshFallback) {
+          shouldInjectRelayCookies = false;
+        }
 
         // Inject relay cookies so WebView benefits from browser's login session.
         // Refresh requests need either a browser cookie or an explicit CSRF token;
         // otherwise replaying a stale persisted refresh cookie just manufactures
         // Invalid CSRF errors on startup.
+        const originalCookieHeader = normalizeCookieHeader(proxyHeaders["cookie"]);
         const mergedCookie = shouldInjectRelayCookies
-          ? buildRelayCookieHeader(proxyHeaders["cookie"])
-          : normalizeCookieHeader(proxyHeaders["cookie"]);
+          ? buildRelayCookieHeader(originalCookieHeader)
+          : originalCookieHeader;
+        const injectedRelayCookies =
+          shouldInjectRelayCookies && relayCookies.size > 0 && mergedCookie !== originalCookieHeader;
         if (mergedCookie) proxyHeaders["cookie"] = mergedCookie;
 
         const bodyChunks = [];
         for await (const chunk of req) bodyChunks.push(chunk);
-        const body = bodyChunks.length > 0 ? Buffer.concat(bodyChunks) : undefined;
-        const proxyRes = await fetch(targetUrl, {
+        let proxyBody = bodyChunks.length > 0 ? Buffer.concat(bodyChunks) : undefined;
+        let effectiveTargetUrl = targetUrl;
+        if (shouldUseRelayRefreshFallback) {
+          effectiveTargetUrl = `${insforgeBase.replace(/\/$/, "")}/api/auth/refresh?client_type=mobile`;
+          proxyHeaders["content-type"] = "application/json";
+          delete proxyHeaders["content-length"];
+          proxyBody = Buffer.from(JSON.stringify({ refresh_token: relayRefreshToken }), "utf8");
+        }
+        const proxyRes = await fetch(effectiveTargetUrl, {
           method: req.method || "GET",
           headers: proxyHeaders,
-          body,
+          body: proxyBody,
           credentials: "include",
           redirect: "manual",
         });
@@ -886,11 +953,18 @@ function createLocalApiHandler({ queuePath }) {
           });
         res.writeHead(proxyRes.status, Object.fromEntries(responseHeaders));
         const resBody = Buffer.from(await proxyRes.arrayBuffer());
+        if (proxyRes.status >= 200 && proxyRes.status < 300) {
+          if (p === "/api/auth/logout") {
+            clearRelayCookies("sign out");
+          } else {
+            captureAuthTokensFromBody(resBody, proxyRes.headers.get("content-type"));
+          }
+        }
         if (
           p === "/api/auth/refresh"
           && proxyRes.status === 403
+          && injectedRelayCookies
           && !hasClientCookie
-          && !hasCsrfHeader
           && /invalid csrf token/i.test(resBody.toString("utf8"))
         ) {
           clearRelayCookies("stale refresh cookie without local CSRF context");
