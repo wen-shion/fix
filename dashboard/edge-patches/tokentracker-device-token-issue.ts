@@ -187,16 +187,12 @@ export default async function (req: Request): Promise<Response> {
   const tokenHash = await sha256Hex(token);
   const createdAt = new Date().toISOString();
 
-  const { error: revokeErr } = await dbClient.database
-    .from("tokentracker_device_tokens")
-    .update({ revoked_at: createdAt })
-    .eq("device_id", deviceId)
-    .is("revoked_at", null);
-
-  if (revokeErr) {
-    return json({ error: "Failed to rotate device token", detail: revokeErr.message }, 500);
-  }
-
+  // NOTE: previous revision revoked all alive tokens on this device before
+  // inserting the new one ("rotate-on-issue"). That coupled with the dashboard
+  // re-minting on every WKWebView reload / module re-eval, killing the CLI's
+  // long-lived token on roughly every dashboard launch and stalling uploads
+  // for ~65% of recently-active users. Explicit rotation belongs in a
+  // separate "sign out devices" endpoint, not in the implicit issue path.
   const { error: tokenErr } = await dbClient.database.from("tokentracker_device_tokens").insert([
     {
       id: tokenId,
