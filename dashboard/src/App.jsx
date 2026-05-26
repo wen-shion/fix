@@ -35,6 +35,9 @@ const LandingPage = lazy(() =>
 const LeaderboardPage = lazy(() =>
   import("./pages/LeaderboardPage.jsx").then((m) => ({ default: m.LeaderboardPage })),
 );
+const LeaderboardProfilePage = lazy(() =>
+  import("./pages/LeaderboardProfilePage.jsx").then((m) => ({ default: m.LeaderboardProfilePage })),
+);
 const LimitsPage = lazy(() =>
   import("./pages/LimitsPage.jsx").then((m) => ({ default: m.LimitsPage })),
 );
@@ -84,6 +87,9 @@ export default function App() {
 
   const normalizedPath = pathname.replace(/\/+$/, "") || "/";
   const isLeaderboardPath = normalizedPath === "/leaderboard";
+  // Standalone shareable profile page: /u/:userId (public, anonymous-visible).
+  const profileMatch = normalizedPath.match(/^\/u\/([^/]+)$/i);
+  const profileUserId = profileMatch ? profileMatch[1] : null;
 
   const cloudAuthSignedIn = Boolean(insforge.enabled && insforge.signedIn);
   const signedIn = isLocalMode || cloudAuthSignedIn;
@@ -103,6 +109,7 @@ export default function App() {
   if (normalizedPath === "/landing") gate = "landing";
   if (normalizedPath === "/dashboard") gate = "dashboard";
   if (isLeaderboardPath) gate = "dashboard";
+  if (profileUserId) gate = "dashboard";
 
   const isLimitsPath = normalizedPath === "/limits";
   const isSettingsPath = normalizedPath === "/settings";
@@ -112,7 +119,9 @@ export default function App() {
   if (isLimitsPath || isSettingsPath || isSkillsPath || isWidgetsPath || isIpCheckPath) gate = "dashboard";
 
   let PageComponent = DashboardPage;
-  if (normalizedPath === "/leaderboard") {
+  if (profileUserId) {
+    PageComponent = LeaderboardProfilePage;
+  } else if (normalizedPath === "/leaderboard") {
     PageComponent = LeaderboardPage;
   } else if (isLimitsPath) {
     PageComponent = LimitsPage;
@@ -164,6 +173,7 @@ export default function App() {
         signOut={() => (insforge.enabled ? insforge.signOut() : Promise.resolve())}
         publicMode={publicMode}
         publicToken={publicToken}
+        userId={profileUserId}
         signInUrl="/login"
         signUpUrl="/login"
       />

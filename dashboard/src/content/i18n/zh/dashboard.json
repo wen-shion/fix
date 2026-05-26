@@ -264,5 +264,6 @@
   "leaderboard.profile_modal.models.none": "暂无模型记录",
   "leaderboard.profile_modal.heatmap.title": "活跃度（最近 365 天）",
   "leaderboard.profile_modal.providers.title": "按 Provider 分布",
-  "leaderboard.profile_modal.providers.none": "本周期无使用数据。"
+  "leaderboard.profile_modal.providers.none": "本周期无使用数据。",
+  "leaderboard.profile_modal.view_full": "查看完整主页"
 }

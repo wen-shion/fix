@@ -1,6 +1,7 @@
 import { Dialog } from "@base-ui/react/dialog";
-import { X } from "lucide-react";
+import { X, ArrowUpRight } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { copy } from "../../lib/copy";
 import { formatCompactNumber, formatUsdCurrency } from "../../lib/format";
 import { useCurrency } from "../../hooks/useCurrency.js";
@@ -100,7 +101,7 @@ const shimmerStyle = `
  * fact list → heatmap → provider list). Same heights as the loaded view
  * to avoid layout shift on resolve.
  */
-function ProfileSkeleton() {
+export function ProfileSkeleton() {
   const bar = "rounded bg-oai-gray-200/50 dark:bg-oai-gray-800/40 tt-shimmer-bar";
   return (
     <div>
@@ -240,14 +241,16 @@ function Header({ user, onClose }) {
           </a>
         )}
       </div>
-      <button
-        type="button"
-        onClick={onClose}
-        className="shrink-0 -mr-1 -mt-1 flex h-8 w-8 items-center justify-center rounded-md text-oai-gray-500 dark:text-oai-gray-400 hover:text-oai-gray-900 dark:hover:text-white hover:bg-oai-gray-100 dark:hover:bg-oai-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand/50 transition-colors group"
-        aria-label={copy("leaderboard.profile_modal.close")}
-      >
-        <X size={16} strokeWidth={2} aria-hidden className="transition-transform duration-200 group-hover:rotate-90 group-active:scale-90" />
-      </button>
+      {onClose && (
+        <button
+          type="button"
+          onClick={onClose}
+          className="shrink-0 -mr-1 -mt-1 flex h-8 w-8 items-center justify-center rounded-md text-oai-gray-500 dark:text-oai-gray-400 hover:text-oai-gray-900 dark:hover:text-white hover:bg-oai-gray-100 dark:hover:bg-oai-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand/50 transition-colors group"
+          aria-label={copy("leaderboard.profile_modal.close")}
+        >
+          <X size={16} strokeWidth={2} aria-hidden className="transition-transform duration-200 group-hover:rotate-90 group-active:scale-90" />
+        </button>
+      )}
     </div>
   );
 }
@@ -292,7 +295,12 @@ function ProviderList({ data }) {
   );
 }
 
-function ModalBody({ data, currency, rate, onClose }) {
+/**
+ * Profile content shared by the leaderboard modal and the standalone
+ * /u/:userId page. `onClose` is optional — when omitted (page mode) the
+ * header renders without a close button.
+ */
+export function ProfileContent({ data, currency, rate, onClose }) {
   const {
     user,
     totals,
@@ -390,6 +398,20 @@ function ModalBody({ data, currency, rate, onClose }) {
           <SectionLabel>{copy("leaderboard.profile_modal.providers.title")}</SectionLabel>
           <ProviderList data={byProvider} />
         </section>
+
+        {/* Modal mode only: link to the standalone shareable profile page. */}
+        {onClose && user?.user_id && (
+          <div className="border-t border-oai-gray-200/70 dark:border-oai-gray-800/60 pt-4">
+            <Link
+              to={`/u/${user.user_id}`}
+              onClick={onClose}
+              className="inline-flex items-center gap-1 text-xs text-oai-gray-500 hover:text-oai-gray-900 dark:text-oai-gray-400 dark:hover:text-oai-gray-100 transition-colors"
+            >
+              <span>{copy("leaderboard.profile_modal.view_full")}</span>
+              <ArrowUpRight size={12} strokeWidth={2} aria-hidden />
+            </Link>
+          </div>
+        )}
       </div>
 
     </>
@@ -403,12 +425,16 @@ function ModalBody({ data, currency, rate, onClose }) {
  * `dashboard/edge-patches/tokentracker-leaderboard-profile.ts` for the
  * canonical response shape.
  */
-export function LeaderboardProfileModal({ isOpen, onClose, userId, period, accessToken }) {
-  const { currency, rate } = useCurrency();
+/**
+ * Fetch the detailed per-user profile. Shared by the modal (enabled while
+ * open) and the standalone page (always enabled). Returns { loading, error,
+ * data }; a 404 resolves to data:null (private / not-found, shown as empty).
+ */
+export function useLeaderboardProfileData({ userId, period, accessToken, enabled = true }) {
   const [state, setState] = useState({ loading: false, error: null, data: null });
 
   useEffect(() => {
-    if (!isOpen || !userId) return undefined;
+    if (!enabled || !userId) return undefined;
     let active = true;
     setState({ loading: true, error: null, data: null });
     (async () => {
@@ -430,7 +456,14 @@ export function LeaderboardProfileModal({ isOpen, onClose, userId, period, acces
     return () => {
       active = false;
     };
-  }, [isOpen, userId, period, accessToken]);
+  }, [enabled, userId, period, accessToken]);
+
+  return state;
+}
+
+export function LeaderboardProfileModal({ isOpen, onClose, userId, period, accessToken }) {
+  const { currency, rate } = useCurrency();
+  const state = useLeaderboardProfileData({ userId, period, accessToken, enabled: isOpen });
 
   return (
     <Dialog.Root
@@ -472,7 +505,7 @@ export function LeaderboardProfileModal({ isOpen, onClose, userId, period, acces
               </div>
             )}
             {!state.loading && !state.error && state.data && (
-              <ModalBody data={state.data} currency={currency} rate={rate} onClose={onClose} />
+              <ProfileContent data={state.data} currency={currency} rate={rate} onClose={onClose} />
             )}
           </Dialog.Popup>
         </Dialog.Viewport>

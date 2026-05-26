@@ -783,3 +783,4 @@ leaderboard.profile_modal.models.none,dashboard,LeaderboardProfileModal,Models,n
 leaderboard.profile_modal.heatmap.title,dashboard,LeaderboardProfileModal,Heatmap,title,"Activity (last 365 days)",,active
 leaderboard.profile_modal.providers.title,dashboard,LeaderboardProfileModal,Providers,title,"By provider",,active
 leaderboard.profile_modal.providers.none,dashboard,LeaderboardProfileModal,Providers,none,"No usage this period.",,active
+leaderboard.profile_modal.view_full,dashboard,LeaderboardProfileModal,Footer,view_full,"View full profile",,active
