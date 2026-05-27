@@ -1,5 +1,7 @@
 import { getInsforgeRemoteUrl } from "./insforge-config";
 
+export const STATUSPAGE_URL = "https://tokentracker.statuspage.io/";
+
 /**
  * 仪表盘/用量等：本地 localhost 一律用空字符串（相对路径走 CLI 内置 API），不访问云端。
  */

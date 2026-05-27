@@ -44,6 +44,7 @@
   "landing.v2.compare.without.p2": "对 Token 消耗一无所知",
   "landing.v2.compare.without.p3": "突如其来的 API 账单",
   "landing.v2.footer.line": "Token Tracker —— 开发者打造，服务开发者。",
+  "landing.v2.nav.status": "状态",
   "landing.v2.nav.github": "GitHub",
   "landing.v2.models.agent.codex": "Codex",
   "landing.v2.models.agent.claude_code": "Claude Code",

@@ -7,6 +7,7 @@ import { HeaderGithubStar } from "../components/HeaderGithubStar.jsx";
 import { InsforgeUserHeaderControls } from "../../components/InsforgeUserHeaderControls.jsx";
 import { useInsforgeAuth } from "../../contexts/InsforgeAuthContext.jsx";
 import { useLoginModal } from "../../contexts/LoginModalContext.jsx";
+import { STATUSPAGE_URL } from "../../lib/config";
 import LaserFlow from "./components/LaserFlow.jsx";
 import LightRays from "./components/LightRays.jsx";
 
@@ -480,6 +481,14 @@ export function MarketingLanding({
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-6 px-4 sm:px-6 text-sm text-oai-gray-400 sm:flex-row">
           <p>{copy("landing.v2.footer.line")}</p>
           <div className="flex items-center gap-6">
+            <a
+              href={STATUSPAGE_URL}
+              className="font-medium text-oai-gray-400 hover:text-white transition-colors"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {copy("landing.v2.nav.status")}
+            </a>
             <a
               href={REPO_URL}
               className="font-medium text-oai-gray-400 hover:text-white transition-colors"
