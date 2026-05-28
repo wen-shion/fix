@@ -105,11 +105,21 @@ const CLAUDE_MEM_OBSERVER_PATH_SEGMENT = "--claude-mem-observer-sessions";
 // Code's sub-agent / thinking transport paths). The repaired ground truth
 // was therefore inflated by 1.6–3.7x on those providers — v3 left it that
 // way.
-// v6 re-runs the same atomic repair after making Claude zero-usage snapshots
-// ineligible for dedup state. Mimo reuses message.id across zero/partial
-// streaming snapshots and the final token-bearing response, so v4/v5 could
-// preserve a tiny scar total instead of the ccusage-aligned ground truth.
-const CLAUDE_GROUND_TRUTH_REPAIR_KEY = "claudeGroundTruthRepair_2026_05_v6";
+// v6 was bumped in 0.26.3 to re-run the repair with the zero-usage dedup fix
+// applied. SHIPPING 0.26.3 caused catastrophic data loss on every upgrader
+// whose ~/.claude session jsonls had been pruned by Claude Code's own
+// cleanup: the repair does atomic-drop + rescan, so any hour_start no longer
+// represented in the on-disk logs is silently removed from queue.jsonl. On
+// the reporter's machine this wiped 2.17B claude tokens (-1.27B opus-4-7,
+// -474M opus-4-6, -376M sonnet-4-5, -48M haiku, -6M sonnet-4-6). The
+// upload-offset reset also propagated the damage to the cloud.
+// 0.26.4 HALTS back at v4 so the buggy atomic-rewrite path stops auto-firing
+// on existing installs. The dedup fixes in parseClaudeFile /
+// categorizeSessionFile / computeClaudeGroundTruthBuckets are KEPT — they are
+// correct in isolation, and any future repair will produce the right answer
+// for whatever data is actually on disk. A targeted, log-gap-safe mimo
+// migration will ship later under its own key.
+const CLAUDE_GROUND_TRUTH_REPAIR_KEY = "claudeGroundTruthRepair_2026_05_v4";
 
 async function cmdSync(argv) {
   const opts = parseArgs(argv);
@@ -2047,7 +2057,7 @@ async function repairClaudeQueueFromGroundTruth({
     }
     uploadState.offset = 0;
     uploadState.updatedAt = new Date().toISOString();
-    uploadState.note = "reset_after_claude_repair_2026_05_v6";
+    uploadState.note = "reset_after_claude_repair_2026_05_v4";
     await fs.writeFile(queueStatePath, JSON.stringify(uploadState));
   }
 
