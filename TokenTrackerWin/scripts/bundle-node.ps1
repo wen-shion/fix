@@ -43,20 +43,41 @@ if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 $zipPath = Join-Path $tmp $zipName
 
-Write-Host "Downloading Node.js v$NodeVersion (win-x64)..."
-Invoke-WebRequest -Uri $url -OutFile $zipPath
-
-# Verify the archive against Node.js's official SHASUMS256.txt before trusting it.
+# Invoke-WebRequest is dramatically slower and more failure-prone on large files
+# while the progress bar is rendered (a well-known Windows PowerShell issue), which
+# is what truncates the ~28MB Node archive and trips the checksum below.
+$ProgressPreference = 'SilentlyContinue'
 $sumsPath = Join-Path $tmp 'SHASUMS256.txt'
-Invoke-WebRequest -Uri "https://nodejs.org/dist/v$NodeVersion/SHASUMS256.txt" -OutFile $sumsPath
-$expectedHash = (Select-String -Path $sumsPath -Pattern ([regex]::Escape($zipName)) |
-    Select-Object -First 1).Line.Split(' ')[0]
-if (-not $expectedHash) { Write-Error "No checksum found for $zipName in SHASUMS256.txt" }
-$actualHash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash
-if ($actualHash -ne $expectedHash.ToUpper()) {
-    Write-Error "Checksum mismatch for $zipName (expected $expectedHash, got $actualHash)"
+
+# Download + verify against Node.js's official SHASUMS256.txt, with retries: a
+# transient/partial download yields a checksum mismatch, so re-fetch rather than
+# failing the whole release on one flaky CI download.
+$maxAttempts = 4
+$verified = $false
+for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+    try {
+        Write-Host "Downloading Node.js v$NodeVersion (win-x64)... (attempt $attempt/$maxAttempts)"
+        Invoke-WebRequest -Uri $url -OutFile $zipPath
+        Invoke-WebRequest -Uri "https://nodejs.org/dist/v$NodeVersion/SHASUMS256.txt" -OutFile $sumsPath
+        $expectedHash = (Select-String -Path $sumsPath -Pattern ([regex]::Escape($zipName)) |
+            Select-Object -First 1).Line.Split(' ')[0]
+        if (-not $expectedHash) { throw "No checksum found for $zipName in SHASUMS256.txt" }
+        $actualHash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash
+        if ($actualHash -ne $expectedHash.ToUpper()) {
+            throw "Checksum mismatch for $zipName (expected $expectedHash, got $actualHash)"
+        }
+        Write-Host "Checksum verified (SHA-256)"
+        $verified = $true
+        break
+    } catch {
+        Write-Warning "Download attempt $attempt failed: $($_.Exception.Message)"
+        if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
+        if ($attempt -lt $maxAttempts) { Start-Sleep -Seconds ($attempt * 3) }
+    }
 }
-Write-Host "Checksum verified (SHA-256)"
+if (-not $verified) {
+    Write-Error "Failed to obtain a valid Node.js v$NodeVersion archive after $maxAttempts attempts"
+}
 
 Expand-Archive -Path $zipPath -DestinationPath $tmp -Force
 $nodeExe = Join-Path $tmp "node-v$NodeVersion-win-x64\node.exe"
