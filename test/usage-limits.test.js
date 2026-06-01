@@ -456,6 +456,63 @@ describe("getUsageLimits", () => {
     }
   });
 
+  it("reads the Claude OAuth access token from %USERPROFILE%\\.claude\\.credentials.json on Windows", async () => {
+    resetUsageLimitsCache();
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-limits-claude-win32-"));
+    try {
+      const claudeDir = path.join(tmp, ".claude");
+      fs.mkdirSync(claudeDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(claudeDir, ".credentials.json"),
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: "win32-claude-token",
+            subscriptionType: "max",
+            rateLimitTier: "tier-1",
+          },
+        }),
+      );
+
+      let observedAuth = null;
+      const result = await getUsageLimits({
+        home: tmp,
+        platform: "win32",
+        providerTimeoutMs: 1000,
+        securityRunner() {
+          // No keychain on Windows; if the macOS path is taken by mistake this would be the wrong token.
+          return { status: 1, stdout: "" };
+        },
+        commandRunner() {
+          return { status: 1, stdout: "" };
+        },
+        fetchImpl(url, opts) {
+          if (typeof url === "string" && url === "https://api.anthropic.com/api/oauth/usage") {
+            observedAuth = opts?.headers?.Authorization || null;
+            return Promise.resolve({
+              ok: true,
+              status: 200,
+              json: async () => ({
+                five_hour: { utilization: 0.4 },
+                seven_day: { utilization: 0.12 },
+                seven_day_opus: null,
+              }),
+            });
+          }
+          return new Promise(() => {});
+        },
+      });
+
+      assert.equal(observedAuth, "Bearer win32-claude-token");
+      assert.equal(result.claude.configured, true);
+      assert.equal(result.claude.error, null);
+      assert.deepEqual(result.claude.five_hour, { utilization: 0.4 });
+      assert.deepEqual(result.claude.seven_day, { utilization: 0.12 });
+    } finally {
+      resetUsageLimitsCache();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("reports Claude unconfigured on Linux when the credentials file is missing", async () => {
     resetUsageLimitsCache();
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-limits-claude-linux-missing-"));

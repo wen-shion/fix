@@ -307,11 +307,47 @@ test("collectLocalSubscriptions reports Linux Claude Code credentials presence w
   }
 });
 
-test("collectLocalSubscriptions does not read ~/.claude/.credentials.json on platforms other than Linux/macOS", async () => {
+test("collectLocalSubscriptions reads Claude Code credentials from %USERPROFILE%\\.claude\\.credentials.json on Windows", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-subscriptions-claude-win32-"));
 
   try {
-    // Real-looking credentials file on disk — but platform is win32, so it must be ignored.
+    // Windows stores the same plain JSON file as Linux (under the user profile).
+    await writeJson(path.join(tmp, ".claude", ".credentials.json"), {
+      claudeAiOauth: {
+        accessToken: "secret-access",
+        subscriptionType: "max",
+        rateLimitTier: "tier-1",
+      },
+    });
+
+    const subs = await collectLocalSubscriptions({
+      home: tmp,
+      env: {},
+      platform: "win32",
+      probeKeychain: true,
+      probeKeychainDetails: true,
+    });
+
+    assert.equal(subs.length, 1);
+    assert.deepEqual(subs[0], {
+      tool: "claude",
+      provider: "anthropic",
+      product: "subscription",
+      planType: "max",
+      rateLimitTier: "tier-1",
+    });
+    assert.ok(!("accessToken" in subs[0]));
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("collectLocalSubscriptions does not read ~/.claude/.credentials.json on unsupported platforms", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-subscriptions-claude-other-"));
+
+  try {
+    // Real-looking credentials file on disk — but the platform has no documented
+    // plain-file store, so it must be ignored.
     await writeJson(path.join(tmp, ".claude", ".credentials.json"), {
       claudeAiOauth: {
         accessToken: "should-not-be-read",
@@ -322,7 +358,7 @@ test("collectLocalSubscriptions does not read ~/.claude/.credentials.json on pla
     const subs = await collectLocalSubscriptions({
       home: tmp,
       env: {},
-      platform: "win32",
+      platform: "aix",
       probeKeychain: true,
       probeKeychainDetails: true,
     });

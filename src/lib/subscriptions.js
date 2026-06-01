@@ -10,10 +10,19 @@ const { probeOpenclawSessionPluginState } = require("./openclaw-session-plugin")
 const OPENAI_AUTH_CLAIM = "https://api.openai.com/auth";
 const MACOS_SECURITY_BIN = "/usr/bin/security";
 const CLAUDE_CODE_KEYCHAIN_SERVICES = ["Claude Code-credentials"];
-// On Linux, Claude Code persists the same OAuth payload as a plain JSON file
-// (~/.claude/.credentials.json) instead of the macOS Keychain. The payload
-// shape is identical: { claudeAiOauth: { accessToken, subscriptionType, ... } }
+// On Linux and Windows, Claude Code persists the same OAuth payload as a plain
+// JSON file instead of the macOS Keychain — at ~/.claude/.credentials.json on
+// Linux and %USERPROFILE%\.claude\.credentials.json on Windows (both resolve via
+// os.homedir()). The payload shape is identical:
+// { claudeAiOauth: { accessToken, subscriptionType, ... } }
 const CLAUDE_CODE_CREDENTIALS_FILE = ".credentials.json";
+// Platforms where Claude Code stores credentials in the plain JSON file above
+// rather than the macOS Keychain.
+const CLAUDE_CODE_CREDENTIALS_FILE_PLATFORMS = new Set(["linux", "win32"]);
+
+function usesClaudeCodeCredentialsFile(platform) {
+  return CLAUDE_CODE_CREDENTIALS_FILE_PLATFORMS.has(platform);
+}
 
 function normalizeString(value) {
   if (typeof value !== "string") return null;
@@ -197,7 +206,7 @@ function readMacosKeychainPassword({ service, securityRunner, timeoutMs } = {}) 
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function readClaudeCodeCredentialsLinuxFile({ home, fsReader } = {}) {
+function readClaudeCodeCredentialsFile({ home, fsReader } = {}) {
   const homeDir = typeof home === "string" && home ? home : os.homedir();
   const credPath = path.join(homeDir, ".claude", CLAUDE_CODE_CREDENTIALS_FILE);
   const reader = typeof fsReader === "function" ? fsReader : fs.readFileSync;
@@ -228,11 +237,12 @@ function detectClaudeCodeCredentialsPresence({ platform, securityRunner, home, f
     return null;
   }
 
-  if (platform !== "linux") return null;
+  if (!usesClaudeCodeCredentialsFile(platform)) return null;
 
-  // Linux: credentials live in ~/.claude/.credentials.json (mode 0600).
-  // Existence-only: just check that the file is readable and contains the OAuth key.
-  const raw = readClaudeCodeCredentialsLinuxFile({ home, fsReader });
+  // Linux/Windows: credentials live in the .credentials.json file (mode 0600 on
+  // Linux; user-profile ACLs on Windows). Existence-only: just check that the
+  // file is readable and contains the OAuth key.
+  const raw = readClaudeCodeCredentialsFile({ home, fsReader });
   if (!raw) return null;
   try {
     const payload = JSON.parse(raw);
@@ -270,8 +280,8 @@ function detectClaudeCodeSubscriptionDetails({ platform, securityRunner, home, f
       const raw = readMacosKeychainPassword({ service, securityRunner });
       if (raw) rawPayloads.push(raw);
     }
-  } else if (platform === "linux") {
-    const raw = readClaudeCodeCredentialsLinuxFile({ home, fsReader });
+  } else if (usesClaudeCodeCredentialsFile(platform)) {
+    const raw = readClaudeCodeCredentialsFile({ home, fsReader });
     if (raw) rawPayloads.push(raw);
   } else {
     return null;
@@ -369,10 +379,11 @@ function readClaudeCodeAccessToken({ platform, securityRunner, home, fsReader } 
     return null;
   }
 
-  if (platform !== "linux") return null;
+  if (!usesClaudeCodeCredentialsFile(platform)) return null;
 
-  // Linux: Claude Code stores the OAuth payload as a JSON file with mode 0600.
-  const raw = readClaudeCodeCredentialsLinuxFile({ home, fsReader });
+  // Linux/Windows: Claude Code stores the OAuth payload as a JSON file
+  // (mode 0600 on Linux; user-profile ACLs on Windows).
+  const raw = readClaudeCodeCredentialsFile({ home, fsReader });
   if (!raw) return null;
   try {
     const payload = JSON.parse(raw);
