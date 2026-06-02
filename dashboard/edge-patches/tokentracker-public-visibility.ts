@@ -175,23 +175,35 @@ export default async function (req: Request): Promise<Response> {
       );
     }
 
-    // Update display_name in user_profiles
+    // Update display_name in user_profiles.
+    // NOTE: tokentracker_user_profiles has NO `updated_at` column (unlike
+    // tokentracker_user_settings). Including it made the upsert fail with
+    // Postgres 42703 ("column ... does not exist"); the error was swallowed
+    // here so the POST still returned 200 with an optimistic result, the UI
+    // showed "saved", but the next GET read back the unchanged name — the
+    // display name silently reverted on every revisit. Do not re-add it.
+    // Trim + cap once so the saved value and the returned value can't drift.
+    let normalizedDisplayName: string | null | undefined = undefined;
     if (typeof body.display_name === "string") {
-      const trimmed = body.display_name.trim().slice(0, 50);
-      await client.database.from("tokentracker_user_profiles").upsert(
-        {
-          user_id: userId,
-          display_name: trimmed || null,
-          updated_at: now,
-        },
-        { onConflict: "user_id" },
-      );
+      normalizedDisplayName = body.display_name.trim().slice(0, 50) || null;
+      const { error: profileErr } = await client.database
+        .from("tokentracker_user_profiles")
+        .upsert(
+          {
+            user_id: userId,
+            display_name: normalizedDisplayName,
+          },
+          { onConflict: "user_id" },
+        );
+      if (profileErr) {
+        return json({ error: profileErr.message || "Failed to save display name" }, 500);
+      }
     }
 
     const result: Record<string, unknown> = { updated_at: now };
     if (body.enabled !== undefined) result.enabled = Boolean(body.enabled);
     if (body.anonymous !== undefined) result.anonymous = Boolean(body.anonymous);
-    if (typeof body.display_name === "string") result.display_name = body.display_name.trim().slice(0, 50) || null;
+    if (normalizedDisplayName !== undefined) result.display_name = normalizedDisplayName;
     if (normalizedGithubUrl !== undefined) result.github_url = normalizedGithubUrl;
     if (body.show_github_url !== undefined) result.show_github_url = Boolean(body.show_github_url);
     return json(result);
