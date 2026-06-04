@@ -82,7 +82,7 @@ export function LeaderboardProfilePage({ auth, signedIn, sessionSoftExpired, use
                 href={RELEASE_URL}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="group no-underline inline-flex items-center gap-1.5 h-8 px-3 text-xs font-bold rounded-lg border border-oai-gray-200 dark:border-white/10 bg-transparent text-oai-gray-700 dark:text-oai-gray-300 hover:bg-oai-gray-100 dark:hover:bg-white/5 hover:text-oai-black dark:hover:text-white transition-all duration-200 active:scale-95 shadow-sm"
+                className="group no-underline inline-flex h-8 items-center gap-1.5 px-3 text-xs font-bold rounded-lg bg-oai-gray-900 dark:bg-white text-white dark:text-oai-gray-950 hover:bg-oai-gray-800 dark:hover:bg-oai-gray-100 transition-all duration-200 active:scale-[0.98] shadow-sm"
               >
                 <Download
                   size={13}
@@ -112,8 +112,8 @@ export function LeaderboardProfilePage({ auth, signedIn, sessionSoftExpired, use
         </div>
       </header>
 
-      <main className="flex-1 pt-4 pb-10 sm:pt-6 sm:pb-16">
-        <div className="mx-auto max-w-2xl px-4 sm:px-6">
+      <main className="flex-1 px-4 pt-4 pb-10 sm:pt-6 sm:pb-16">
+        <div className="mx-auto max-w-3xl">
           <div className="rounded-2xl bg-white dark:bg-oai-gray-950 ring-1 ring-oai-gray-200 dark:ring-oai-gray-800 overflow-hidden shadow-sm dark:shadow-none">
             {state.loading && <ProfileSkeleton variant="page" />}
             {!state.loading && state.error && (
@@ -137,8 +137,8 @@ export function LeaderboardProfilePage({ auth, signedIn, sessionSoftExpired, use
         </div>
       </main>
 
-      <footer className="border-t border-oai-gray-200 dark:border-oai-gray-900 py-8 transition-colors duration-200">
-        <div className="mx-auto flex max-w-2xl items-center justify-between px-4 sm:px-6 text-sm text-oai-gray-400 dark:text-oai-gray-500">
+      <footer className="border-t border-oai-gray-200 dark:border-oai-gray-900 py-8 px-4 transition-colors duration-200">
+        <div className="mx-auto flex max-w-3xl items-center justify-between text-sm text-oai-gray-400 dark:text-oai-gray-500">
           <p>{copy("landing.v2.footer.line")}</p>
           <ThemeToggle theme={theme} resolvedTheme={resolvedTheme} onSetTheme={setTheme} direction="up" align="right" />
         </div>
