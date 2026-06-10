@@ -68,25 +68,41 @@ async function issueDeviceToken(client: any, userId: string, clientInfo: string 
     }
 
     if (!deviceId) {
-      const { data: legacy } = await client.database
+      // Adoption tries the new suffixed name first, then the PRE-UPGRADE
+      // suffix-less name (`TokenTracker CLI (darwin-arm64 host)`) — every
+      // CLI device minted before the machine-id rollout has the latter, and
+      // without this fallback an upgrade re-login would orphan the old row
+      // and mint a second device (hot buckets re-emitted across the switch
+      // would then mirror). If two same-hostname machines shared one legacy
+      // row, the first to upgrade claims it; the second falls through to a
+      // fresh anchored device — counting stays correct either way because
+      // rows never move or duplicate.
+      const legacyBareName = `TokenTracker CLI${clientInfo ? ` (${clientInfo})` : ""}`.slice(0, 128);
+      const { data: legacyRows } = await client.database
         .from("tokentracker_devices")
-        .select("id")
+        .select("id, device_name")
         .eq("user_id", userId)
         .eq("platform", platform)
-        .eq("device_name", deviceName)
+        .in("device_name", [deviceName, legacyBareName])
         .is("revoked_at", null)
         .is("machine_id", null)
-        .order("created_at", { ascending: true })
-        .limit(1)
-        .maybeSingle();
-      if (legacy && (legacy as { id: string }).id) {
-        const legacyId = (legacy as { id: string }).id;
+        .order("created_at", { ascending: true });
+      const candidates = Array.isArray(legacyRows) ? (legacyRows as Array<{ id: string; device_name: string }>) : [];
+      // Prefer an exact new-name match, then the bare legacy name.
+      const ordered = [
+        ...candidates.filter((r) => r.device_name === deviceName),
+        ...candidates.filter((r) => r.device_name !== deviceName),
+      ];
+      for (const candidate of ordered) {
         const { error: adoptErr } = await client.database
           .from("tokentracker_devices")
-          .update({ machine_id: machineId })
-          .eq("id", legacyId)
+          .update({ machine_id: machineId, device_name: deviceName })
+          .eq("id", candidate.id)
           .is("machine_id", null);
-        if (!adoptErr) deviceId = legacyId;
+        if (!adoptErr) {
+          deviceId = candidate.id;
+          break;
+        }
       }
     }
 
