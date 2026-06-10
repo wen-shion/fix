@@ -1052,6 +1052,76 @@ test("parseCursorApiIncremental treats Cursor CSV as authoritative and replaces 
   }
 });
 
+test("parseCursorApiIncremental preserves history older than a windowed/truncated export", async () => {
+  // Guard (2026-06 audit): the wipe-then-refill design assumes the Cursor
+  // export is full-history. If the endpoint ever returns a windowed export
+  // (e.g. current billing period only), buckets older than the response
+  // must NOT be zeroed — zeroed buckets get re-emitted and uploaded,
+  // overwriting the cloud copy with zeros.
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-cursor-window-"));
+  try {
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1, files: {}, updatedAt: null };
+    const mkRecord = (date, inputTokens) => ({
+      date,
+      model: "auto",
+      kind: "Included",
+      inputTokens,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 0,
+      totalTokens: inputTokens,
+    });
+
+    // Full export: old + recent rows.
+    await parseCursorApiIncremental({
+      records: [
+        mkRecord("2026-01-05T09:00:00.000Z", 1000),
+        mkRecord("2026-04-01T10:00:00.000Z", 100),
+      ],
+      cursors,
+      queuePath,
+      source: "cursor",
+    });
+    const oldKey = "cursor|auto|2026-01-05T09:00:00.000Z";
+    assert.equal(cursors.hourly.buckets[oldKey].totals.total_tokens, 1000);
+
+    // Windowed export: only the recent row comes back (correction to 80).
+    await parseCursorApiIncremental({
+      records: [mkRecord("2026-04-01T10:00:00.000Z", 80)],
+      cursors,
+      queuePath,
+      source: "cursor",
+    });
+    assert.equal(
+      cursors.hourly.buckets[oldKey].totals.total_tokens,
+      1000,
+      "history older than the export window must survive",
+    );
+    assert.equal(
+      cursors.hourly.buckets["cursor|auto|2026-04-01T10:00:00.000Z"].totals.total_tokens,
+      80,
+      "rows inside the window are still authoritatively replaced",
+    );
+
+    // Malformed export (records without parseable dates): wipe nothing.
+    await parseCursorApiIncremental({
+      records: [{ model: "auto", kind: "Included", inputTokens: 5 }],
+      cursors,
+      queuePath,
+      source: "cursor",
+    });
+    assert.equal(cursors.hourly.buckets[oldKey].totals.total_tokens, 1000);
+    assert.equal(
+      cursors.hourly.buckets["cursor|auto|2026-04-01T10:00:00.000Z"].totals.total_tokens,
+      80,
+      "a dateless export must not zero anything",
+    );
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("parseOpencodeIncremental aggregates message tokens and model", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-opencode-"));
   try {
@@ -4572,7 +4642,13 @@ test("parseKiroCliIncremental canonicalizes Bedrock model IDs and re-buckets on 
     const env = { KIRO_CLI_DB_PATH: dbPath, KIRO_HOME: tmp };
 
     // One conversation with one request: Bedrock ARN-style model id, small
-    // prompt/response.
+    // prompt/response. Timestamps are dynamic (a couple hours ago) — a fixed
+    // calendar date would age past the 90-day cursor window and trip the
+    // prune watermark, silently breaking the multi-run assertions below.
+    const bucketMs = 30 * 60 * 1000;
+    const bucketStartMs = Math.floor((Date.now() - 2 * 3600 * 1000) / bucketMs) * bucketMs;
+    const reqTsMs = bucketStartMs + 5 * 60 * 1000;
+    const expectedHourStart = new Date(bucketStartMs).toISOString();
     function convValue(promptLen, responseLen) {
       return {
         model_info: { model_id: "auto" },
@@ -4582,7 +4658,7 @@ test("parseKiroCliIncremental canonicalizes Bedrock model IDs and re-buckets on 
             {
               request_id: "req-1",
               message_id: "msg-1",
-              request_start_timestamp_ms: Date.parse("2026-04-20T10:05:00.000Z"),
+              request_start_timestamp_ms: reqTsMs,
               user_prompt_length: promptLen,
               response_size: responseLen,
               model_id: "anthropic.claude-sonnet-4-20250514-v1:0",
@@ -4653,7 +4729,7 @@ test("parseKiroCliIncremental canonicalizes Bedrock model IDs and re-buckets on 
         (row) =>
           row.source === "kiro" &&
           row.model === "claude-sonnet-4" &&
-          row.hour_start === "2026-04-20T10:00:00.000Z",
+          row.hour_start === expectedHourStart,
       )
       .pop();
     assert.ok(lastForBucket, "mutated bucket must have at least one queue row");
@@ -4699,9 +4775,9 @@ test("parseKiroCliIncremental retracts orphan session-file contribution when a c
               {
                 loop_id: { rand: 42 },
                 message_ids: ["m1"],
-                request_start_timestamp_ms: Date.parse(
-                  "2026-04-20T10:05:00.000Z",
-                ),
+                // Dynamic ts: a fixed date would age past the 90-day cursor
+                // window and the prune watermark would skip run 2.
+                request_start_timestamp_ms: Date.now() - 2 * 3600 * 1000,
                 input_token_count: 100,
                 output_token_count: 200,
               },
@@ -4738,9 +4814,7 @@ test("parseKiroCliIncremental retracts orphan session-file contribution when a c
               {
                 request_id: "sqlite-req-0001",
                 message_id: "m1",
-                request_start_timestamp_ms: Date.parse(
-                  "2026-04-20T10:05:00.000Z",
-                ),
+                request_start_timestamp_ms: Date.now() - 2 * 3600 * 1000,
                 user_prompt_length: 400,
                 response_size: 800,
                 model_id: "claude-sonnet-4.5",
@@ -4803,9 +4877,8 @@ test("parseKiroCliIncremental retracts no-loop_id session-file entries via sessi
             user_turn_metadatas: [
               {
                 message_ids: [msgId],
-                request_start_timestamp_ms: Date.parse(
-                  "2026-04-20T10:05:00.000Z",
-                ),
+                // Dynamic ts — see the migrate test above for why.
+                request_start_timestamp_ms: Date.now() - 2 * 3600 * 1000,
                 input_token_count: 100,
                 output_token_count: 200,
               },
@@ -4840,9 +4913,7 @@ test("parseKiroCliIncremental retracts no-loop_id session-file entries via sessi
               {
                 request_id: "new-sqlite-req",
                 message_id: msgId,
-                request_start_timestamp_ms: Date.parse(
-                  "2026-04-20T10:05:00.000Z",
-                ),
+                request_start_timestamp_ms: Date.now() - 2 * 3600 * 1000,
                 user_prompt_length: 400,
                 response_size: 800,
                 model_id: "claude-sonnet-4.5",
@@ -4875,8 +4946,12 @@ test("parseKiroCliIncremental keeps newer session-file turns when older ones hav
     const convId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     const msgA = "msg-A-migrated";
     const msgB = "msg-B-session-only";
-    const tsA = Date.parse("2026-04-20T10:05:00.000Z");
-    const tsB = Date.parse("2026-04-20T10:35:00.000Z");
+    // Dynamic timestamps in two adjacent half-hour buckets — fixed dates
+    // would age past the 90-day cursor window (prune watermark skip).
+    const mixedBucketMs = 30 * 60 * 1000;
+    const mixedBase = Math.floor((Date.now() - 2 * 3600 * 1000) / mixedBucketMs) * mixedBucketMs;
+    const tsA = mixedBase + 5 * 60 * 1000;
+    const tsB = mixedBase + 35 * 60 * 1000;
     const env = { KIRO_CLI_DB_PATH: dbPath, HOME: tmp };
 
     // Session file: turn A (older, also in SQLite) + turn B (newer, not
@@ -5026,6 +5101,99 @@ test("parseKiroCliIncremental early-return path still runs cap + clamp (Bug-1)",
       ["fresh"],
       "cap must drop stale entries on the zero-flat early-return path",
     );
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("parseKiroCliIncremental never re-adds requests whose cursor entry was age-pruned (inflation loop)", async () => {
+  // Regression (2026-06 audit): clampAndCapKiroCliState dropped cursor
+  // entries older than 90 days, but readKiroCliRequests re-reads the FULL
+  // conversations_v2 table every sync. A pruned request came back with
+  // `prev === undefined` and was re-ADDED to its old bucket on every sync —
+  // the bucket's absolute totals grew without bound. The persisted prune
+  // watermark must freeze anything older than the prune horizon after the
+  // first ingest.
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-kiro-inflate-"));
+  try {
+    const dbPath = path.join(tmp, "data.sqlite3");
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const env = { KIRO_CLI_DB_PATH: dbPath, HOME: tmp };
+    const oldTs = Date.now() - 200 * 24 * 3600 * 1000; // far past the 90d window
+    const freshTs = Date.now() - 2 * 3600 * 1000;
+    const conv = {
+      model_info: { model_id: "claude-sonnet-4.5" },
+      user_turn_metadata: {
+        continuation_id: "conv-old",
+        requests: [
+          {
+            request_id: "req-ancient",
+            message_id: "msg-ancient",
+            request_start_timestamp_ms: oldTs,
+            user_prompt_length: 4000,
+            response_size: 4000,
+            model_id: "claude-sonnet-4.5",
+          },
+          {
+            request_id: "req-fresh",
+            message_id: "msg-fresh",
+            request_start_timestamp_ms: freshTs,
+            user_prompt_length: 400,
+            response_size: 400,
+            model_id: "claude-sonnet-4.5",
+          },
+        ],
+      },
+    };
+    cp.execFileSync("sqlite3", [
+      dbPath,
+      "CREATE TABLE conversations_v2 (key TEXT, conversation_id TEXT, value TEXT, created_at INTEGER, updated_at INTEGER, PRIMARY KEY (key, conversation_id));",
+    ]);
+    cp.execFileSync("sqlite3", [
+      dbPath,
+      `INSERT INTO conversations_v2 VALUES ('proj', 'conv-old', '${JSON.stringify(conv).replace(/'/g, "''")}', 1, 2);`,
+    ]);
+
+    const cursors = { version: 1 };
+    // First-ever parse: watermark starts at 0, so the full history (incl. the
+    // 200-day-old request) is ingested exactly once.
+    const r1 = await rolloutModule.parseKiroCliIncremental({ cursors, queuePath, env });
+    assert.equal(r1.eventsAggregated, 2, "first parse ingests full history");
+    assert.ok(
+      !cursors.kiroCli.requests["req-ancient"],
+      "ancient entry is age-pruned from cursor state",
+    );
+    assert.ok(cursors.kiroCli.requests["req-fresh"], "fresh entry retained");
+    assert.ok(
+      Number(cursors.kiroCli.watermarkMs) > oldTs,
+      "prune watermark must clear the pruned request's ts",
+    );
+
+    const tokensInOldBucket = async () => {
+      const rows = (await fs.readFile(queuePath, "utf8"))
+        .split("\n")
+        .filter((l) => l.trim())
+        .map((l) => JSON.parse(l));
+      const latest = new Map();
+      for (const row of rows) latest.set(`${row.source}|${row.model}|${row.hour_start}`, row);
+      let total = 0;
+      for (const row of latest.values()) {
+        if (row.source === "kiro" && Date.parse(row.hour_start) < Date.now() - 100 * 24 * 3600 * 1000) {
+          total += row.total_tokens || 0;
+        }
+      }
+      return total;
+    };
+    const afterFirst = await tokensInOldBucket();
+    assert.equal(afterFirst, 2000, "old bucket counted once (4000+4000 chars / 4)");
+
+    // Re-run twice against the unchanged DB: the pruned ancient request must
+    // NOT be re-added (pre-fix it re-added 2000 tokens per run, forever).
+    const r2 = await rolloutModule.parseKiroCliIncremental({ cursors, queuePath, env });
+    assert.equal(r2.eventsAggregated, 0, "second run must not re-add the pruned request");
+    const r3 = await rolloutModule.parseKiroCliIncremental({ cursors, queuePath, env });
+    assert.equal(r3.eventsAggregated, 0, "third run must not re-add either");
+    assert.equal(await tokensInOldBucket(), 2000, "old bucket total is stable across syncs");
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }

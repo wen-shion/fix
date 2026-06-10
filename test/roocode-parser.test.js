@@ -209,6 +209,91 @@ test("parseRoocodeIncremental aggregates tokens and dedupes across re-runs", asy
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("parseRoocodeIncremental counts tokens back-filled into an api_req_started placeholder (in-flight race)", async () => {
+  // Cline-family extensions write `api_req_started` with zero tokens at
+  // request START, then rewrite the SAME message (same ts) with real token
+  // counts on completion. A sync racing the in-flight request used to mark
+  // the zero placeholder as seen, permanently dropping the back-filled
+  // tokens.
+  const ts = Date.UTC(2026, 4, 21, 14, 0, 0);
+  const placeholder = {
+    type: "say",
+    say: "api_req_started",
+    ts,
+    text: JSON.stringify({ request: "..." }), // no token fields yet
+  };
+  const root = setupFixture({
+    tasks: [
+      {
+        uuid: "task-backfill",
+        history:
+          "<environment_details>\n<model>claude-3-7-sonnet-20250219</model>\n</environment_details>",
+        uiMessages: [placeholder],
+      },
+    ],
+  });
+  const queuePath = path.join(root, "queue.jsonl");
+  const cursors = {};
+
+  // Run 1: sync hits the in-flight placeholder — nothing aggregated.
+  const res1 = await parseRoocodeIncremental({
+    taskFiles: resolveRoocodeTaskFiles(fakeEnv(root)),
+    cursors,
+    queuePath,
+  });
+  assert.equal(res1.eventsAggregated, 0, "placeholder must not be aggregated");
+
+  // The request completes: Roo rewrites the SAME message in place.
+  const backfilled = {
+    ...placeholder,
+    text: JSON.stringify({
+      tokensIn: 1200,
+      tokensOut: 300,
+      cacheReads: 0,
+      cacheWrites: 0,
+      apiProtocol: "anthropic",
+    }),
+  };
+  const uiPath = path.join(
+    root,
+    "User",
+    "globalStorage",
+    "rooveterinaryinc.roo-cline",
+    "tasks",
+    "task-backfill",
+    "ui_messages.json",
+  );
+  fs.writeFileSync(uiPath, JSON.stringify([backfilled]));
+
+  // Run 2: the back-filled tokens must be counted.
+  const res2 = await parseRoocodeIncremental({
+    taskFiles: resolveRoocodeTaskFiles(fakeEnv(root)),
+    cursors,
+    queuePath,
+  });
+  assert.equal(res2.eventsAggregated, 1, "back-filled tokens must be counted");
+  const rows = fs
+    .readFileSync(queuePath, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l))
+    .filter((r) => r.source === "roocode");
+  const last = rows[rows.length - 1];
+  assert.equal(last.input_tokens, 1200);
+  assert.equal(last.output_tokens, 300);
+
+  // Run 3: unchanged file — still idempotent.
+  const res3 = await parseRoocodeIncremental({
+    taskFiles: resolveRoocodeTaskFiles(fakeEnv(root)),
+    cursors,
+    queuePath,
+  });
+  assert.equal(res3.eventsAggregated, 0, "no double count after back-fill");
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("parseRoocodeIncremental falls back to protocol:<apiProtocol> when history missing", async () => {
   const ts = Date.UTC(2026, 4, 21, 15, 0, 0);
   const root = setupFixture({

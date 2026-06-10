@@ -27,6 +27,16 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
+// Blocked users must disappear from EVERY public read path, not only the
+// leaderboard list/profile endpoints — stale snapshot rows would otherwise
+// keep serving their embed card after a ban.
+const BLOCKED_LEADERBOARD_USER_IDS = new Set(
+  (Deno.env.get("LEADERBOARD_BLOCKED_USER_IDS") ?? "")
+    .split(",")
+    .map((id) => id.trim().toLowerCase())
+    .filter(Boolean),
+);
+
 const BRAND_GREEN = "#059669";
 const PALETTE = {
   light: {
@@ -257,6 +267,9 @@ export default async function (req: Request): Promise<Response> {
 
   if (!userId || !isUuid(userId)) {
     return svgResponse(placeholderSvg("bad user_id", theme), 400, 0);
+  }
+  if (BLOCKED_LEADERBOARD_USER_IDS.has(userId)) {
+    return svgResponse(placeholderSvg("not found", theme), 404, 0);
   }
   if (!["week", "month", "total"].includes(period)) {
     return svgResponse(placeholderSvg("bad period", theme), 400, 0);

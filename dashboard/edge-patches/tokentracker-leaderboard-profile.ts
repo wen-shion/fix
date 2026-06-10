@@ -430,7 +430,14 @@ async function scanHourlyForUser(client: any, userId: string, rangeStartIso: str
       .eq("user_id", userId)
       .gte("hour_start", rangeStartIso)
       .lt("hour_start", rangeEndIso)
+      // hour_start alone is NOT unique (one row per device×source×model), and
+      // PostgREST pagination over a non-unique sort can skip/duplicate rows
+      // at page boundaries. The trailing keys make the order total — the
+      // five columns together are the table's upsert conflict key.
       .order("hour_start", { ascending: true })
+      .order("device_id", { ascending: true })
+      .order("source", { ascending: true })
+      .order("model", { ascending: true })
       .range(offset, offset + PAGE_SIZE - 1);
     if (error) throw new Error(error.message);
     if (!rows || rows.length === 0) break;
@@ -531,12 +538,34 @@ export default async function (req: Request): Promise<Response> {
   };
 
   // Rank: read from the period snapshot (the refresh job already computes it).
+  // The query is pinned to the CURRENT (from_day, to_day) window — taking the
+  // latest generated_at row for the period regardless of window returned the
+  // PREVIOUS week/month's rank next to freshly-computed current-window totals
+  // right after a window rollover ("Rank #3, 0 tokens").
   const periodBounds = windowBoundsForPeriod(period);
+  let snapFromDay = periodBounds.from_day;
+  let snapToDay = periodBounds.to_day;
+  if (period === "total") {
+    // total snapshots are keyed (1970-01-01, <refresh day>) — mirror the
+    // reader (tokentracker-leaderboard.ts) and resolve the latest pair.
+    const { data: latestTotal } = await client.database
+      .from("tokentracker_leaderboard_snapshots")
+      .select("from_day, to_day")
+      .eq("period", "total")
+      .order("to_day", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const lt = latestTotal as { from_day?: string; to_day?: string } | null;
+    snapFromDay = (lt?.from_day ?? "1970-01-01").slice(0, 10);
+    snapToDay = (lt?.to_day ?? new Date().toISOString()).slice(0, 10);
+  }
   const { data: snapRow } = await client.database
     .from("tokentracker_leaderboard_snapshots")
     .select("rank, display_name, avatar_url, generated_at")
     .eq("user_id", userId)
     .eq("period", period)
+    .eq("from_day", snapFromDay)
+    .eq("to_day", snapToDay)
     .order("generated_at", { ascending: false })
     .limit(1)
     .maybeSingle();

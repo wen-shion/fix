@@ -31,6 +31,16 @@ const corsHeaders = {
 const BRAND_GREEN = "#059669";
 const LABEL_BG = "#555";
 
+// Blocked users must disappear from EVERY public read path, not only the
+// leaderboard list/profile endpoints — stale snapshot rows would otherwise
+// keep serving their badge after a ban.
+const BLOCKED_LEADERBOARD_USER_IDS = new Set(
+  (Deno.env.get("LEADERBOARD_BLOCKED_USER_IDS") ?? "")
+    .split(",")
+    .map((id) => id.trim().toLowerCase())
+    .filter(Boolean),
+);
+
 function svgResponse(svg: string, status = 200, cacheSeconds = 60): Response {
   return new Response(svg, {
     status,
@@ -197,6 +207,9 @@ export default async function (req: Request): Promise<Response> {
 
   if (!userId || !isUuid(userId)) {
     return svgResponse(renderErrorBadge("tokentracker", "bad user_id"), 400, 0);
+  }
+  if (BLOCKED_LEADERBOARD_USER_IDS.has(userId)) {
+    return svgResponse(renderErrorBadge("tokentracker", "not found"), 404, 0);
   }
 
   if (!["tokens", "cost", "rank"].includes(metric)) {

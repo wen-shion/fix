@@ -283,6 +283,67 @@ test("Kilo Code: parseKilocodeIncremental aggregates api_req_started + api_req_d
   }
 });
 
+test("Kilo Code: tokens back-filled into an api_req_started placeholder are counted (in-flight race)", async () => {
+  // Same Cline-family in-place back-fill behavior as Roo Code — see
+  // test/roocode-parser.test.js. The zero placeholder must NOT be marked
+  // seen, or the back-filled tokens are dropped forever.
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-kilo-backfill-"));
+  try {
+    const taskUuid = "019c0242-5d2c-722d-ba0e-0164225df809";
+    const ts = 1769564400000;
+    const placeholder = {
+      ts,
+      type: "say",
+      say: "api_req_started",
+      text: JSON.stringify({ request: "..." }),
+    };
+    const filePath = await makeKilocodeTask(tmp, "Cursor", taskUuid, [placeholder]);
+    const cursors = { version: 1 };
+    const queuePath = path.join(tmp, "queue.jsonl");
+
+    const r1 = await parseKilocodeIncremental({
+      taskFiles: [{ filePath, taskUuid, ide: "Cursor" }],
+      cursors,
+      queuePath,
+    });
+    assert.equal(r1.eventsAggregated, 0, "in-flight placeholder must not aggregate");
+
+    // Completion: same ts, real tokens written in place.
+    await fs.writeFile(
+      filePath,
+      JSON.stringify([
+        {
+          ...placeholder,
+          text: JSON.stringify({
+            apiProtocol: "openai",
+            tokensIn: 900,
+            tokensOut: 100,
+            cacheReads: 0,
+            cacheWrites: 0,
+            inferenceProvider: "minimax",
+          }),
+        },
+      ]),
+    );
+
+    const r2 = await parseKilocodeIncremental({
+      taskFiles: [{ filePath, taskUuid, ide: "Cursor" }],
+      cursors,
+      queuePath,
+    });
+    assert.equal(r2.eventsAggregated, 1, "back-filled tokens must be counted");
+
+    const r3 = await parseKilocodeIncremental({
+      taskFiles: [{ filePath, taskUuid, ide: "Cursor" }],
+      cursors,
+      queuePath,
+    });
+    assert.equal(r3.eventsAggregated, 0, "no double count after back-fill");
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("Kilo Code: normalizeKilocodeProviderToModel sanitizes vendor names and falls back to provider:unknown", () => {
   assert.equal(normalizeKilocodeProviderToModel("Moonshot AI"), "provider:moonshot-ai");
   assert.equal(normalizeKilocodeProviderToModel("minimax"), "provider:minimax");

@@ -123,6 +123,11 @@ const CLAUDE_MEM_OBSERVER_PATH_SEGMENT = "--claude-mem-observer-sessions";
 // migration will ship later under its own key.
 const CLAUDE_GROUND_TRUTH_REPAIR_KEY = "claudeGroundTruthRepair_2026_05_v4";
 
+function warnProviderParseFailure(label, err, opts) {
+  if (opts?.auto) return;
+  process.stderr.write(`${label} sync: ${err && err.message ? err.message : err}\n`);
+}
+
 async function cmdSync(argv) {
   const opts = parseArgs(argv);
   const home = os.homedir();
@@ -210,41 +215,55 @@ async function cmdSync(argv) {
       );
     }
 
-    const parseResult = await parseRolloutIncremental({
-      rolloutFiles,
-      cursors,
-      queuePath,
-      projectQueuePath,
-      onProgress: (p) => {
-        if (!progress?.enabled) return;
-        const pct = p.total > 0 ? p.index / p.total : 1;
-        progress.update(
-          `Parsing ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(
-            p.bucketsQueued,
-          )}`,
-        );
-      },
-    });
+    let parseResult = { filesProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+    try {
+      parseResult = await parseRolloutIncremental({
+        rolloutFiles,
+        cursors,
+        queuePath,
+        projectQueuePath,
+        onProgress: (p) => {
+          if (!progress?.enabled) return;
+          const pct = p.total > 0 ? p.index / p.total : 1;
+          progress.update(
+            `Parsing ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(
+              p.bucketsQueued,
+            )}`,
+          );
+        },
+      });
+    } catch (err) {
+      warnProviderParseFailure("Codex", err, opts);
+    }
 
     let openclawResult = { filesProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
     if (openclawFiles.length > 0) {
       // Only runs when explicitly triggered by OpenClaw hooks.
-      openclawResult = await parseOpenclawIncremental({
-        sessionFiles: openclawFiles,
+      try {
+        openclawResult = await parseOpenclawIncremental({
+          sessionFiles: openclawFiles,
+          cursors,
+          queuePath,
+          projectQueuePath,
+          source: "openclaw",
+        });
+      } catch (err) {
+        warnProviderParseFailure("OpenClaw", err, opts);
+      }
+    }
+
+    let openclawFallback = { filesProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+    try {
+      openclawFallback = await applyOpenclawTotalsFallback({
+        trackerDir,
+        signal: openclawSignal,
         cursors,
         queuePath,
         projectQueuePath,
-        source: "openclaw",
       });
+    } catch (err) {
+      warnProviderParseFailure("OpenClaw", err, opts);
     }
-
-    const openclawFallback = await applyOpenclawTotalsFallback({
-      trackerDir,
-      signal: openclawSignal,
-      cursors,
-      queuePath,
-      projectQueuePath,
-    });
     openclawResult.filesProcessed += openclawFallback.filesProcessed;
     openclawResult.eventsAggregated += openclawFallback.eventsAggregated;
     openclawResult.bucketsQueued += openclawFallback.bucketsQueued;
@@ -265,22 +284,26 @@ async function cmdSync(argv) {
           `Parsing Claude ${renderBar(0)} 0/${formatNumber(claudeFiles.length)} files | buckets 0`,
         );
       }
-      claudeResult = await parseClaudeIncremental({
-        projectFiles: claudeFiles,
-        cursors,
-        queuePath,
-        projectQueuePath,
-        onProgress: (p) => {
-          if (!progress?.enabled) return;
-          const pct = p.total > 0 ? p.index / p.total : 1;
-          progress.update(
-            `Parsing Claude ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(
-              p.bucketsQueued,
-            )}`,
-          );
-        },
-        source: "claude",
-      });
+      try {
+        claudeResult = await parseClaudeIncremental({
+          projectFiles: claudeFiles,
+          cursors,
+          queuePath,
+          projectQueuePath,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing Claude ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(
+                p.bucketsQueued,
+              )}`,
+            );
+          },
+          source: "claude",
+        });
+      } catch (err) {
+        warnProviderParseFailure("Claude", err, opts);
+      }
     }
 
     const geminiFiles = await listGeminiSessionFiles(geminiTmpDir);
@@ -291,22 +314,26 @@ async function cmdSync(argv) {
           `Parsing Gemini ${renderBar(0)} 0/${formatNumber(geminiFiles.length)} files | buckets 0`,
         );
       }
-      geminiResult = await parseGeminiIncremental({
-        sessionFiles: geminiFiles,
-        cursors,
-        queuePath,
-        projectQueuePath,
-        onProgress: (p) => {
-          if (!progress?.enabled) return;
-          const pct = p.total > 0 ? p.index / p.total : 1;
-          progress.update(
-            `Parsing Gemini ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(
-              p.bucketsQueued,
-            )}`,
-          );
-        },
-        source: "gemini",
-      });
+      try {
+        geminiResult = await parseGeminiIncremental({
+          sessionFiles: geminiFiles,
+          cursors,
+          queuePath,
+          projectQueuePath,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing Gemini ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(
+                p.bucketsQueued,
+              )}`,
+            );
+          },
+          source: "gemini",
+        });
+      } catch (err) {
+        warnProviderParseFailure("Gemini", err, opts);
+      }
     }
 
     const antigravityFiles = await listAntigravityTranscripts(geminiHome);
@@ -317,22 +344,26 @@ async function cmdSync(argv) {
           `Parsing Antigravity ${renderBar(0)} 0/${formatNumber(antigravityFiles.length)} files | buckets 0`,
         );
       }
-      antigravityResult = await parseAntigravityIncremental({
-        sessionFiles: antigravityFiles,
-        cursors,
-        queuePath,
-        projectQueuePath,
-        onProgress: (p) => {
-          if (!progress?.enabled) return;
-          const pct = p.total > 0 ? p.index / p.total : 1;
-          progress.update(
-            `Parsing Antigravity ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(
-              p.bucketsQueued,
-            )}`,
-          );
-        },
-        source: "antigravity",
-      });
+      try {
+        antigravityResult = await parseAntigravityIncremental({
+          sessionFiles: antigravityFiles,
+          cursors,
+          queuePath,
+          projectQueuePath,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing Antigravity ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(
+                p.bucketsQueued,
+              )}`,
+            );
+          },
+          source: "antigravity",
+        });
+      } catch (err) {
+        warnProviderParseFailure("Antigravity", err, opts);
+      }
     }
 
     const opencodeFiles = await listOpencodeMessageFiles(opencodeStorageDir);
@@ -343,22 +374,26 @@ async function cmdSync(argv) {
           `Parsing Opencode ${renderBar(0)} 0/${formatNumber(opencodeFiles.length)} files | buckets 0`,
         );
       }
-      opencodeResult = await parseOpencodeIncremental({
-        messageFiles: opencodeFiles,
-        cursors,
-        queuePath,
-        projectQueuePath,
-        onProgress: (p) => {
-          if (!progress?.enabled) return;
-          const pct = p.total > 0 ? p.index / p.total : 1;
-          progress.update(
-            `Parsing Opencode ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(
-              p.total,
-            )} files | buckets ${formatNumber(p.bucketsQueued)}`,
-          );
-        },
-        source: "opencode",
-      });
+      try {
+        opencodeResult = await parseOpencodeIncremental({
+          messageFiles: opencodeFiles,
+          cursors,
+          queuePath,
+          projectQueuePath,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing Opencode ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(
+                p.total,
+              )} files | buckets ${formatNumber(p.bucketsQueued)}`,
+            );
+          },
+          source: "opencode",
+        });
+      } catch (err) {
+        warnProviderParseFailure("Opencode", err, opts);
+      }
     }
 
     // OpenCode v1.2+ stores messages in SQLite (opencode.db) instead of JSON files.
@@ -371,22 +406,26 @@ async function cmdSync(argv) {
           `Parsing Opencode DB ${renderBar(0)} 0/${formatNumber(dbMessages.length)} msgs | buckets 0`,
         );
       }
-      opencodeDbResult = await parseOpencodeDbIncremental({
-        dbMessages,
-        cursors,
-        queuePath,
-        projectQueuePath,
-        onProgress: (p) => {
-          if (!progress?.enabled) return;
-          const pct = p.total > 0 ? p.index / p.total : 1;
-          progress.update(
-            `Parsing Opencode DB ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(
-              p.total,
-            )} msgs | buckets ${formatNumber(p.bucketsQueued)}`,
-          );
-        },
-        source: "opencode",
-      });
+      try {
+        opencodeDbResult = await parseOpencodeDbIncremental({
+          dbMessages,
+          cursors,
+          queuePath,
+          projectQueuePath,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing Opencode DB ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(
+                p.total,
+              )} msgs | buckets ${formatNumber(p.bucketsQueued)}`,
+            );
+          },
+          source: "opencode",
+        });
+      } catch (err) {
+        warnProviderParseFailure("Opencode DB", err, opts);
+      }
       opencodeResult.filesProcessed += opencodeDbResult.messagesProcessed;
       opencodeResult.eventsAggregated += opencodeDbResult.eventsAggregated;
       opencodeResult.bucketsQueued += opencodeDbResult.bucketsQueued;
@@ -405,23 +444,27 @@ async function cmdSync(argv) {
           `Parsing Kilo CLI ${renderBar(0)} 0/${formatNumber(kiloDbMessages.length)} msgs | buckets 0`,
         );
       }
-      kiloResult = await parseOpencodeDbIncremental({
-        dbMessages: kiloDbMessages,
-        cursors,
-        queuePath,
-        projectQueuePath,
-        onProgress: (p) => {
-          if (!progress?.enabled) return;
-          const pct = p.total > 0 ? p.index / p.total : 1;
-          progress.update(
-            `Parsing Kilo CLI ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(
-              p.total,
-            )} msgs | buckets ${formatNumber(p.bucketsQueued)}`,
-          );
-        },
-        source: "kilo-cli",
-        cursorKey: "kiloCli",
-      });
+      try {
+        kiloResult = await parseOpencodeDbIncremental({
+          dbMessages: kiloDbMessages,
+          cursors,
+          queuePath,
+          projectQueuePath,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing Kilo CLI ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(
+                p.total,
+              )} msgs | buckets ${formatNumber(p.bucketsQueued)}`,
+            );
+          },
+          source: "kilo-cli",
+          cursorKey: "kiloCli",
+        });
+      } catch (err) {
+        warnProviderParseFailure("Kilo CLI", err, opts);
+      }
     }
 
     // ── Kilo Code VS Code extension (Cline-style ui_messages.json) ──
@@ -433,20 +476,24 @@ async function cmdSync(argv) {
           `Parsing Kilo Code ${renderBar(0)} 0/${formatNumber(kilocodeTaskFiles.length)} tasks | buckets 0`,
         );
       }
-      kilocodeResult = await parseKilocodeIncremental({
-        taskFiles: kilocodeTaskFiles,
-        cursors,
-        queuePath,
-        onProgress: (p) => {
-          if (!progress?.enabled) return;
-          const pct = p.total > 0 ? p.index / p.total : 1;
-          progress.update(
-            `Parsing Kilo Code ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(
-              p.total,
-            )} tasks | buckets ${formatNumber(p.bucketsQueued)}`,
-          );
-        },
-      });
+      try {
+        kilocodeResult = await parseKilocodeIncremental({
+          taskFiles: kilocodeTaskFiles,
+          cursors,
+          queuePath,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing Kilo Code ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(
+                p.total,
+              )} tasks | buckets ${formatNumber(p.bucketsQueued)}`,
+            );
+          },
+        });
+      } catch (err) {
+        warnProviderParseFailure("Kilo Code", err, opts);
+      }
     }
 
     // ── Goose (Block) — SQLite sessions with cumulative tokens per session ──
@@ -456,20 +503,24 @@ async function cmdSync(argv) {
       if (progress?.enabled) {
         progress.start(`Parsing Goose ${renderBar(0)} 0 sessions | buckets 0`);
       }
-      gooseResult = await parseGooseIncremental({
-        dbPath: gooseDbPath,
-        cursors,
-        queuePath,
-        onProgress: (p) => {
-          if (!progress?.enabled) return;
-          const pct = p.total > 0 ? p.index / p.total : 1;
-          progress.update(
-            `Parsing Goose ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(
-              p.total,
-            )} sessions | buckets ${formatNumber(p.bucketsQueued)}`,
-          );
-        },
-      });
+      try {
+        gooseResult = await parseGooseIncremental({
+          dbPath: gooseDbPath,
+          cursors,
+          queuePath,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing Goose ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(
+                p.total,
+              )} sessions | buckets ${formatNumber(p.bucketsQueued)}`,
+            );
+          },
+        });
+      } catch (err) {
+        warnProviderParseFailure("Goose", err, opts);
+      }
     }
 
     // ── Droid (Factory CLI) — passive reader for ~/.factory/sessions/*.settings.json ──
@@ -481,24 +532,28 @@ async function cmdSync(argv) {
           `Parsing Droid ${renderBar(0)} 0/${formatNumber(droidSettingsFiles.length)} sessions | buckets 0`,
         );
       }
-      droidResult = await parseDroidIncremental({
-        settingsFiles: droidSettingsFiles,
-        cursors,
-        queuePath,
-        // Full-scan sync: drop cursor entries for any session whose
-        // settings.json has disappeared off disk so cursors.droid stays
-        // bounded by the actual on-disk session count.
-        prune: true,
-        onProgress: (p) => {
-          if (!progress?.enabled) return;
-          const pct = p.total > 0 ? p.index / p.total : 1;
-          progress.update(
-            `Parsing Droid ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(
-              p.total,
-            )} sessions | buckets ${formatNumber(p.bucketsQueued)}`,
-          );
-        },
-      });
+      try {
+        droidResult = await parseDroidIncremental({
+          settingsFiles: droidSettingsFiles,
+          cursors,
+          queuePath,
+          // Full-scan sync: drop cursor entries for any session whose
+          // settings.json has disappeared off disk so cursors.droid stays
+          // bounded by the actual on-disk session count.
+          prune: true,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing Droid ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(
+                p.total,
+              )} sessions | buckets ${formatNumber(p.bucketsQueued)}`,
+            );
+          },
+        });
+      } catch (err) {
+        warnProviderParseFailure("Droid", err, opts);
+      }
     }
 
     // ── Zed Agent (all providers; cumulative-delta over SQLite threads) ──
@@ -508,20 +563,24 @@ async function cmdSync(argv) {
       if (progress?.enabled) {
         progress.start(`Parsing Zed Agent ${renderBar(0)} 0 threads | buckets 0`);
       }
-      zedResult = await parseZedIncremental({
-        dbPath: zedDbPath,
-        cursors,
-        queuePath,
-        onProgress: (p) => {
-          if (!progress?.enabled) return;
-          const pct = p.total > 0 ? p.index / p.total : 1;
-          progress.update(
-            `Parsing Zed Agent ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(
-              p.total,
-            )} threads | buckets ${formatNumber(p.bucketsQueued)}`,
-          );
-        },
-      });
+      try {
+        zedResult = await parseZedIncremental({
+          dbPath: zedDbPath,
+          cursors,
+          queuePath,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing Zed Agent ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(
+                p.total,
+              )} threads | buckets ${formatNumber(p.bucketsQueued)}`,
+            );
+          },
+        });
+      } catch (err) {
+        warnProviderParseFailure("Zed Agent", err, opts);
+      }
     }
 
     // ── Roo Code VS Code extension (Cline-derived; rooveterinaryinc.roo-cline) ──
@@ -533,20 +592,24 @@ async function cmdSync(argv) {
           `Parsing Roo Code ${renderBar(0)} 0/${formatNumber(roocodeTaskFiles.length)} tasks | buckets 0`,
         );
       }
-      roocodeResult = await parseRoocodeIncremental({
-        taskFiles: roocodeTaskFiles,
-        cursors,
-        queuePath,
-        onProgress: (p) => {
-          if (!progress?.enabled) return;
-          const pct = p.total > 0 ? p.index / p.total : 1;
-          progress.update(
-            `Parsing Roo Code ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(
-              p.total,
-            )} tasks | buckets ${formatNumber(p.bucketsQueued)}`,
-          );
-        },
-      });
+      try {
+        roocodeResult = await parseRoocodeIncremental({
+          taskFiles: roocodeTaskFiles,
+          cursors,
+          queuePath,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing Roo Code ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(
+                p.total,
+              )} tasks | buckets ${formatNumber(p.bucketsQueued)}`,
+            );
+          },
+        });
+      } catch (err) {
+        warnProviderParseFailure("Roo Code", err, opts);
+      }
     }
 
     // ── Cursor (API-based) ──
@@ -605,19 +668,23 @@ async function cmdSync(argv) {
       if (progress?.enabled) {
         progress.start(`Parsing Kiro ${renderBar(0)} | buckets 0`);
       }
-      kiroResult = await parseKiroIncremental({
-        dbPath: kiroDbPath,
-        jsonlPath: kiroJsonlPath,
-        cursors,
-        queuePath,
-        onProgress: (p) => {
-          if (!progress?.enabled) return;
-          const pct = p.total > 0 ? p.index / p.total : 1;
-          progress.update(
-            `Parsing Kiro ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} records | buckets ${formatNumber(p.bucketsQueued)}`,
-          );
-        },
-      });
+      try {
+        kiroResult = await parseKiroIncremental({
+          dbPath: kiroDbPath,
+          jsonlPath: kiroJsonlPath,
+          cursors,
+          queuePath,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing Kiro ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} records | buckets ${formatNumber(p.bucketsQueued)}`,
+            );
+          },
+        });
+      } catch (err) {
+        warnProviderParseFailure("Kiro", err, opts);
+      }
     }
 
     // ── Hermes Agent (SQLite-based) ──
@@ -627,18 +694,22 @@ async function cmdSync(argv) {
       if (progress?.enabled) {
         progress.start(`Parsing Hermes ${renderBar(0)} | buckets 0`);
       }
-      hermesResult = await parseHermesIncremental({
-        hermesPath,
-        cursors,
-        queuePath,
-        onProgress: (p) => {
-          if (!progress?.enabled) return;
-          const pct = p.total > 0 ? p.index / p.total : 1;
-          progress.update(
-            `Parsing Hermes ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} sessions | buckets ${formatNumber(p.bucketsQueued)}`,
-          );
-        },
-      });
+      try {
+        hermesResult = await parseHermesIncremental({
+          hermesPath,
+          cursors,
+          queuePath,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing Hermes ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} sessions | buckets ${formatNumber(p.bucketsQueued)}`,
+            );
+          },
+        });
+      } catch (err) {
+        warnProviderParseFailure("Hermes", err, opts);
+      }
     }
 
     // ── Kiro CLI (reads ~/Library/Application Support/kiro-cli/data.sqlite3
@@ -682,19 +753,23 @@ async function cmdSync(argv) {
       if (progress?.enabled) {
         progress.start(`Parsing Kimi Code ${renderBar(0)} | buckets 0`);
       }
-      kimiResult = await parseKimiIncremental({
-        wireFiles: kimiWireFiles,
-        cursors,
-        queuePath,
-        env: process.env,
-        onProgress: (p) => {
-          if (!progress?.enabled) return;
-          const pct = p.total > 0 ? p.index / p.total : 1;
-          progress.update(
-            `Parsing Kimi Code ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(p.bucketsQueued)}`,
-          );
-        },
-      });
+      try {
+        kimiResult = await parseKimiIncremental({
+          wireFiles: kimiWireFiles,
+          cursors,
+          queuePath,
+          env: process.env,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing Kimi Code ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(p.bucketsQueued)}`,
+            );
+          },
+        });
+      } catch (err) {
+        warnProviderParseFailure("Kimi Code", err, opts);
+      }
     }
 
     // ── Kimi Code official (@moonshot-ai/kimi-code, ~/.kimi-code) ──
@@ -704,19 +779,23 @@ async function cmdSync(argv) {
       if (progress?.enabled) {
         progress.start(`Parsing Kimi Code (official) ${renderBar(0)} | buckets 0`);
       }
-      kimiCodeResult = await parseKimiCodeIncremental({
-        wireFiles: kimiCodeWireFiles,
-        cursors,
-        queuePath,
-        env: process.env,
-        onProgress: (p) => {
-          if (!progress?.enabled) return;
-          const pct = p.total > 0 ? p.index / p.total : 1;
-          progress.update(
-            `Parsing Kimi Code (official) ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(p.bucketsQueued)}`,
-          );
-        },
-      });
+      try {
+        kimiCodeResult = await parseKimiCodeIncremental({
+          wireFiles: kimiCodeWireFiles,
+          cursors,
+          queuePath,
+          env: process.env,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing Kimi Code (official) ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(p.bucketsQueued)}`,
+            );
+          },
+        });
+      } catch (err) {
+        warnProviderParseFailure("Kimi Code (official)", err, opts);
+      }
     }
 
     // ── CodeBuddy CLI (passive ~/.codebuddy/projects/**/*.jsonl reader) ──
@@ -728,19 +807,23 @@ async function cmdSync(argv) {
       if (progress?.enabled) {
         progress.start(`Parsing CodeBuddy ${renderBar(0)} | buckets 0`);
       }
-      codebuddyResult = await parseCodebuddyIncremental({
-        projectFiles: codebuddyFiles,
-        cursors,
-        queuePath,
-        env: process.env,
-        onProgress: (p) => {
-          if (!progress?.enabled) return;
-          const pct = p.total > 0 ? p.index / p.total : 1;
-          progress.update(
-            `Parsing CodeBuddy ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(p.bucketsQueued)}`,
-          );
-        },
-      });
+      try {
+        codebuddyResult = await parseCodebuddyIncremental({
+          projectFiles: codebuddyFiles,
+          cursors,
+          queuePath,
+          env: process.env,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing CodeBuddy ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(p.bucketsQueued)}`,
+            );
+          },
+        });
+      } catch (err) {
+        warnProviderParseFailure("CodeBuddy", err, opts);
+      }
     }
 
     // ── oh-my-pi (passive ~/.omp/agent/sessions/**/*.jsonl reader) ──
@@ -750,19 +833,23 @@ async function cmdSync(argv) {
       if (progress?.enabled) {
         progress.start(`Parsing oh-my-pi ${renderBar(0)} | buckets 0`);
       }
-      ompResult = await parseOmpIncremental({
-        sessionFiles: ompFiles,
-        cursors,
-        queuePath,
-        env: process.env,
-        onProgress: (p) => {
-          if (!progress?.enabled) return;
-          const pct = p.total > 0 ? p.index / p.total : 1;
-          progress.update(
-            `Parsing oh-my-pi ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(p.bucketsQueued)}`,
-          );
-        },
-      });
+      try {
+        ompResult = await parseOmpIncremental({
+          sessionFiles: ompFiles,
+          cursors,
+          queuePath,
+          env: process.env,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing oh-my-pi ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(p.bucketsQueued)}`,
+            );
+          },
+        });
+      } catch (err) {
+        warnProviderParseFailure("oh-my-pi", err, opts);
+      }
     }
 
     // ── pi (@mariozechner/pi-coding-agent) — passive ~/.pi/agent/sessions/**/*.jsonl reader ──
@@ -777,19 +864,23 @@ async function cmdSync(argv) {
       if (progress?.enabled) {
         progress.start(`Parsing pi ${renderBar(0)} | buckets 0`);
       }
-      piResult = await parsePiIncremental({
-        sessionFiles: piFiles,
-        cursors,
-        queuePath,
-        env: process.env,
-        onProgress: (p) => {
-          if (!progress?.enabled) return;
-          const pct = p.total > 0 ? p.index / p.total : 1;
-          progress.update(
-            `Parsing pi ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(p.bucketsQueued)}`,
-          );
-        },
-      });
+      try {
+        piResult = await parsePiIncremental({
+          sessionFiles: piFiles,
+          cursors,
+          queuePath,
+          env: process.env,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing pi ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(p.bucketsQueued)}`,
+            );
+          },
+        });
+      } catch (err) {
+        warnProviderParseFailure("pi", err, opts);
+      }
     }
 
     // ── Craft Agents (passive ~/.craft-agent + workspaces session.jsonl reader) ──
@@ -799,19 +890,23 @@ async function cmdSync(argv) {
       if (progress?.enabled) {
         progress.start(`Parsing Craft ${renderBar(0)} | buckets 0`);
       }
-      craftResult = await parseCraftIncremental({
-        sessionFiles: craftFiles,
-        cursors,
-        queuePath,
-        env: process.env,
-        onProgress: (p) => {
-          if (!progress?.enabled) return;
-          const pct = p.total > 0 ? p.index / p.total : 1;
-          progress.update(
-            `Parsing Craft ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(p.bucketsQueued)}`,
-          );
-        },
-      });
+      try {
+        craftResult = await parseCraftIncremental({
+          sessionFiles: craftFiles,
+          cursors,
+          queuePath,
+          env: process.env,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing Craft ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(p.bucketsQueued)}`,
+            );
+          },
+        });
+      } catch (err) {
+        warnProviderParseFailure("Craft", err, opts);
+      }
     }
 
     // ── Grok Build (xAI) ──
@@ -860,19 +955,24 @@ async function cmdSync(argv) {
       if (progress?.enabled) {
         progress.start(`Parsing Grok Build ${renderBar(0)} | buckets 0`);
       }
-      const grokScanResult = await parseGrokBuildIncremental({
-        sessions: grokSessionInputs,
-        cursors,
-        queuePath,
-        env: process.env,
-        onProgress: (p) => {
-          if (!progress?.enabled) return;
-          const pct = p.total > 0 ? p.index / p.total : 1;
-          progress.update(
-            `Parsing Grok Build ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} sessions | buckets ${formatNumber(p.bucketsQueued)}`,
-          );
-        },
-      });
+      let grokScanResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+      try {
+        grokScanResult = await parseGrokBuildIncremental({
+          sessions: grokSessionInputs,
+          cursors,
+          queuePath,
+          env: process.env,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing Grok Build ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} sessions | buckets ${formatNumber(p.bucketsQueued)}`,
+            );
+          },
+        });
+      } catch (err) {
+        warnProviderParseFailure("Grok Build", err, opts);
+      }
       grokResult = {
         recordsProcessed: grokResult.recordsProcessed + grokScanResult.recordsProcessed,
         eventsAggregated: grokResult.eventsAggregated + grokScanResult.eventsAggregated,
@@ -890,19 +990,23 @@ async function cmdSync(argv) {
       if (progress?.enabled) {
         progress.start(`Parsing Copilot ${renderBar(0)} | buckets 0`);
       }
-      copilotResult = await parseCopilotIncremental({
-        otelPaths: copilotPaths,
-        cursors,
-        queuePath,
-        env: process.env,
-        onProgress: (p) => {
-          if (!progress?.enabled) return;
-          const pct = p.total > 0 ? p.index / p.total : 1;
-          progress.update(
-            `Parsing Copilot ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(p.bucketsQueued)}`,
-          );
-        },
-      });
+      try {
+        copilotResult = await parseCopilotIncremental({
+          otelPaths: copilotPaths,
+          cursors,
+          queuePath,
+          env: process.env,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing Copilot ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(p.bucketsQueued)}`,
+            );
+          },
+        });
+      } catch (err) {
+        warnProviderParseFailure("Copilot", err, opts);
+      }
     }
 
     if (cursors?.projectHourly?.projects && projectQueuePath && projectQueueStatePath) {

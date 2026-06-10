@@ -2649,13 +2649,32 @@ async function parseCursorApiIncremental({
   const total = records.length;
 
   if (records.length > 0) {
-    for (const [key, bucket] of Object.entries(hourlyState.buckets || {})) {
-      const parsed = parseBucketKey(key);
-      const sourceKey = normalizeSourceInput(parsed.source) || DEFAULT_SOURCE;
-      if (sourceKey !== defaultSource) continue;
-      if (!bucket?.totals) continue;
-      bucket.totals = initTotals();
-      touchedBuckets.add(key);
+    // Guard (2026-06 audit): only wipe buckets the fetched export can
+    // actually rebuild. The wipe-then-refill design assumes the CSV is a
+    // FULL-history export; if Cursor ever windows or truncates the export,
+    // unconditionally zeroing every bucket would erase (and upload zeros
+    // over) all history older than the response. Wiping from the earliest
+    // record onward is identical for full exports and fail-safe for
+    // partial ones.
+    let earliestBucketStart = null;
+    for (const record of records) {
+      if (!record?.date) continue;
+      const b = toUtcHalfHourStart(record.date);
+      if (b && (!earliestBucketStart || b < earliestBucketStart)) earliestBucketStart = b;
+    }
+    // No parseable record date at all means the export is malformed —
+    // refilling would add nothing, so wiping would zero out (and upload
+    // zeros over) the entire history. Skip the wipe entirely.
+    if (earliestBucketStart) {
+      for (const [key, bucket] of Object.entries(hourlyState.buckets || {})) {
+        const parsed = parseBucketKey(key);
+        const sourceKey = normalizeSourceInput(parsed.source) || DEFAULT_SOURCE;
+        if (sourceKey !== defaultSource) continue;
+        if (!bucket?.totals) continue;
+        if (parsed.hourStart && parsed.hourStart < earliestBucketStart) continue;
+        bucket.totals = initTotals();
+        touchedBuckets.add(key);
+      }
     }
   }
 
@@ -3880,12 +3899,25 @@ async function parseKiroCliIncremental({ sessionFiles, cursors, queuePath, onPro
     const updatedAt = new Date().toISOString();
     hourlyState.updatedAt = updatedAt;
     cursors.hourly = hourlyState;
-    cursors.kiroCli = { ...kiroCliState, requests: cappedEarly, updatedAt };
+    cursors.kiroCli = {
+      ...kiroCliState,
+      requests: cappedEarly.requests,
+      watermarkMs: Math.max(Number(kiroCliState.watermarkMs) || 0, cappedEarly.watermarkMs),
+      updatedAt,
+    };
     return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued };
   }
   const cb = typeof onProgress === "function" ? onProgress : null;
   let recordsProcessed = 0;
   let eventsAggregated = 0;
+
+  // 2026-06 audit fix: requests older than the persisted prune watermark were
+  // already counted once and had their cursor entry pruned by
+  // clampAndCapKiroCliState — re-processing them (prev === undefined) re-ADDED
+  // their tokens to the same bucket on every sync, inflating old buckets
+  // without bound. Skip them; the watermark only ever advances, and starts at
+  // 0 so a first-ever parse still ingests the full DB history.
+  const kiroCliWatermarkMs = Number(kiroCliState.watermarkMs) || 0;
 
   for (let i = 0; i < flat.length; i++) {
     const r = flat[i];
@@ -3901,6 +3933,7 @@ async function parseKiroCliIncremental({ sessionFiles, cursors, queuePath, onPro
 
     const tsMs = Number(r.request_start_timestamp_ms);
     if (!Number.isFinite(tsMs) || tsMs <= 0) continue;
+    if (tsMs < kiroCliWatermarkMs) continue;
     const bucketStart = toUtcHalfHourStart(new Date(tsMs).toISOString());
     if (!bucketStart) continue;
 
@@ -3982,7 +4015,12 @@ async function parseKiroCliIncremental({ sessionFiles, cursors, queuePath, onPro
   const updatedAt = new Date().toISOString();
   hourlyState.updatedAt = updatedAt;
   cursors.hourly = hourlyState;
-  cursors.kiroCli = { ...kiroCliState, requests: cappedState, updatedAt };
+  cursors.kiroCli = {
+    ...kiroCliState,
+    requests: cappedState.requests,
+    watermarkMs: Math.max(kiroCliWatermarkMs, cappedState.watermarkMs),
+    updatedAt,
+  };
 
   return { recordsProcessed, eventsAggregated, bucketsQueued };
 }
@@ -4008,6 +4046,14 @@ function clampAndCapKiroCliState({ requestState, hourlyState, touchedBuckets }) 
   }
   // TASK-004: cap cursors.kiroCli.requests by age + count. Runs LAST so
   // nothing active or just-retracted is pruned mid-flight.
+  //
+  // 2026-06 audit fix: pruning an entry while readKiroCliRequests has no
+  // time floor meant the same request came back next sync with
+  // `prev === undefined` and was re-ADDED to its (old) bucket — every sync,
+  // forever. The returned watermarkMs records how far this prune reached;
+  // the parse loop skips any request older than the persisted watermark, so
+  // a pruned request can never be re-counted. First-ever parse still counts
+  // arbitrarily old history (watermark starts at 0).
   const ageCutoffMs = Date.now() - KIRO_CLI_CURSOR_MAX_AGE_MS;
   const cappedEntries = [];
   for (const [reqId, entry] of Object.entries(requestState)) {
@@ -4016,13 +4062,22 @@ function clampAndCapKiroCliState({ requestState, hourlyState, touchedBuckets }) 
     if (!Number.isFinite(ts) || ts < ageCutoffMs) continue;
     cappedEntries.push([reqId, entry, ts]);
   }
+  // +30min margin: entries are pruned by bucketStart (half-hour floor) while
+  // the parse loop skips by raw request ts, which can sit up to 30 minutes
+  // after its bucketStart. Without the margin a request whose bucket just
+  // crossed the cutoff would be pruned yet still pass the skip, re-adding for
+  // a few syncs until the watermark catches up.
+  let watermarkMs = ageCutoffMs + 30 * 60 * 1000;
   if (cappedEntries.length > KIRO_CLI_CURSOR_MAX_ENTRIES) {
     cappedEntries.sort((a, b) => b[2] - a[2]); // newest first
+    // Newest EVICTED entry sits at index MAX_ENTRIES after the sort; the
+    // watermark must clear it so count-capped evictions can't re-add either.
+    watermarkMs = Math.max(watermarkMs, cappedEntries[KIRO_CLI_CURSOR_MAX_ENTRIES][2] + 1);
     cappedEntries.length = KIRO_CLI_CURSOR_MAX_ENTRIES;
   }
   const capped = {};
   for (const [reqId, entry] of cappedEntries) capped[reqId] = entry;
-  return capped;
+  return { requests: capped, watermarkMs };
 }
 
 // Back-compat path: per-session .json files (the old fixture shape). Emits
@@ -5204,7 +5259,13 @@ async function parseRoocodeIncremental({
       const cacheReads = toNonNegativeInt(payload.cacheReads);
       const cacheWrites = toNonNegativeInt(payload.cacheWrites);
       if (tokensIn === 0 && tokensOut === 0 && cacheReads === 0 && cacheWrites === 0) {
-        seenIds.add(dedupKey);
+        // Cline-family extensions write `api_req_started` at request START
+        // (zero tokens) and back-fill the SAME message in place (same ts)
+        // once the request completes. Marking the zero placeholder as seen
+        // would skip the back-filled tokens forever — a sync racing an
+        // in-flight request silently under-counted that turn. Leave it
+        // unseen; the file-level mtime gate re-evaluates it when the task
+        // file is rewritten.
         continue;
       }
 
@@ -6473,7 +6534,10 @@ async function parseKilocodeIncremental({
       const cacheReads = toNonNegativeInt(payload.cacheReads);
       const cacheWrites = toNonNegativeInt(payload.cacheWrites);
       if (tokensIn === 0 && tokensOut === 0 && cacheReads === 0 && cacheWrites === 0) {
-        seenIds.add(dedupKey);
+        // See the roocode parser: `api_req_started` is written at request
+        // START with zero tokens and back-filled in place (same ts) on
+        // completion. Marking the placeholder seen would drop the
+        // back-filled tokens forever when a sync races an in-flight request.
         continue;
       }
 
