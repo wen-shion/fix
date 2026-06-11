@@ -1929,6 +1929,13 @@ describe("getUsageLimits Claude stale fallback", () => {
     });
   }
 
+  function ageClaudeCache(tmp, ageMs) {
+    const cachePath = path.join(tmp, ".tokentracker", "tracker", "claude-usage-limits-cache.json");
+    const payload = JSON.parse(fs.readFileSync(cachePath, "utf8"));
+    payload.claude.cached_at = new Date(Date.now() - ageMs).toISOString();
+    fs.writeFileSync(cachePath, JSON.stringify(payload, null, 2));
+  }
+
   it("serves the last successful read when a later fetch is rate limited", async () => {
     resetUsageLimitsCache();
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-limits-claude-stale-"));
@@ -1950,7 +1957,9 @@ describe("getUsageLimits Claude stale fallback", () => {
       assert.equal(ok.claude.five_hour.utilization, 11);
       assert.notEqual(ok.claude.stale, true);
 
-      // Drop the in-memory cache so the next call actually re-fetches and hits the 429.
+      // Age the disk cache past the short fresh-cache TTL, then drop the in-memory cache
+      // so the next call actually re-fetches and hits the 429 fallback branch.
+      ageClaudeCache(tmp, 11 * 60 * 1000);
       resetUsageLimitsCache();
 
       const limited = await runLimits(tmp, () =>
@@ -1966,6 +1975,47 @@ describe("getUsageLimits Claude stale fallback", () => {
       assert.equal(limited.claude.stale, true);
       assert.equal(limited.claude.five_hour.utilization, 11);
       assert.equal(limited.claude.seven_day.utilization, 81);
+    } finally {
+      resetUsageLimitsCache();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("uses a recent disk cache instead of refetching Claude after process cache reset", async () => {
+    resetUsageLimitsCache();
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-limits-claude-fresh-cache-"));
+    try {
+      makeClaudeHome(tmp);
+
+      let claudeCalls = 0;
+      const ok = await runLimits(tmp, () => {
+        claudeCalls += 1;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            five_hour: { utilization: 22, resets_at: FUTURE_RESET },
+            seven_day: { utilization: 44, resets_at: FUTURE_RESET },
+            seven_day_opus: null,
+          }),
+        });
+      });
+      assert.equal(ok.claude.error, null);
+      assert.equal(ok.claude.five_hour.utilization, 22);
+      assert.equal(claudeCalls, 1);
+
+      resetUsageLimitsCache();
+      const cached = await runLimits(tmp, () => {
+        claudeCalls += 1;
+        throw new Error("Claude endpoint should not be called while disk cache is fresh");
+      });
+
+      assert.equal(claudeCalls, 1);
+      assert.equal(cached.claude.configured, true);
+      assert.equal(cached.claude.error, null);
+      assert.equal(cached.claude.stale, false);
+      assert.equal(cached.claude.five_hour.utilization, 22);
+      assert.equal(cached.claude.seven_day.utilization, 44);
     } finally {
       resetUsageLimitsCache();
       fs.rmSync(tmp, { recursive: true, force: true });
@@ -2083,6 +2133,7 @@ describe("getUsageLimits Claude stale fallback", () => {
       );
       assert.equal(ok.claude.error, null);
 
+      ageClaudeCache(tmp, 11 * 60 * 1000);
       resetUsageLimitsCache();
 
       const limited = await runLimits(tmp, () =>

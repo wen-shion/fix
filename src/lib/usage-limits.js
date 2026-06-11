@@ -36,6 +36,7 @@ const ANTIGRAVITY_LIMITS_CACHE_UNKNOWN_RESET_TTL_MS = 12 * 60 * 60 * 1000;
 // file with only its own key, so a shared file would clobber).
 const CLAUDE_LIMITS_CACHE_FILE = "claude-usage-limits-cache.json";
 const CLAUDE_LIMITS_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const CLAUDE_LIMITS_CACHE_FRESH_TTL_MS = 10 * 60 * 1000;
 // A 429 from the usage endpoint carries a long `retry-after` (often 20+ minutes). Persist
 // the cooldown so every surface — this process, the menu bar app's embedded server, a later
 // restart — stops calling until it expires. Hammering during the cooldown just renews the
@@ -1484,11 +1485,18 @@ function hasClaudeWindow(limits) {
   return Boolean(limits?.five_hour || limits?.seven_day || limits?.seven_day_opus);
 }
 
-function normalizeClaudeCachedLimits(raw, { nowMs = Date.now() } = {}) {
+function normalizeClaudeCachedLimits(
+  raw,
+  {
+    nowMs = Date.now(),
+    maxAgeMs = CLAUDE_LIMITS_CACHE_MAX_AGE_MS,
+    stale = true,
+  } = {},
+) {
   const cachedAtMs = parseTimeMs(raw?.cached_at);
   if (!Number.isFinite(cachedAtMs)) return null;
   if (cachedAtMs > nowMs + 60_000) return null;
-  if (nowMs - cachedAtMs > CLAUDE_LIMITS_CACHE_MAX_AGE_MS) return null;
+  if (nowMs - cachedAtMs > maxAgeMs) return null;
 
   const cached = {
     configured: true,
@@ -1497,20 +1505,34 @@ function normalizeClaudeCachedLimits(raw, { nowMs = Date.now() } = {}) {
     seven_day: isClaudeCacheWindowUsable(raw?.seven_day, { nowMs }) ? raw.seven_day : null,
     seven_day_opus: isClaudeCacheWindowUsable(raw?.seven_day_opus, { nowMs }) ? raw.seven_day_opus : null,
     extra_usage: raw?.extra_usage ?? null,
-    stale: true,
+    stale,
     cached_at: raw.cached_at,
   };
   return hasClaudeWindow(cached) ? cached : null;
 }
 
-function readClaudeLimitsCache({ home, nowMs = Date.now() } = {}) {
+function readClaudeLimitsCache({
+  home,
+  nowMs = Date.now(),
+  maxAgeMs = CLAUDE_LIMITS_CACHE_MAX_AGE_MS,
+  stale = true,
+} = {}) {
   const cachePath = resolveClaudeLimitsCachePath({ home });
   try {
     const parsed = JSON.parse(fs.readFileSync(cachePath, "utf8"));
-    return normalizeClaudeCachedLimits(parsed?.claude, { nowMs });
+    return normalizeClaudeCachedLimits(parsed?.claude, { nowMs, maxAgeMs, stale });
   } catch (_error) {
     return null;
   }
+}
+
+function readFreshClaudeLimitsCache({ home, nowMs = Date.now() } = {}) {
+  return readClaudeLimitsCache({
+    home,
+    nowMs,
+    maxAgeMs: CLAUDE_LIMITS_CACHE_FRESH_TTL_MS,
+    stale: false,
+  });
 }
 
 function writeClaudeLimitsCache(limits, { home, nowMs = Date.now() } = {}) {
@@ -2016,10 +2038,15 @@ async function fetchUsageLimitsUncached({
   // Skip the upstream Claude call entirely while a 429 cooldown is active — calling again
   // just renews the penalty. The result handling below serves cache or a cooldown message.
   const claudeRetryAtMs = claudeToken ? readClaudeRateLimitRetryAtMs({ home, nowMs }) : null;
+  // Also avoid cross-process hammering after a recent successful read. The macOS app can
+  // restart its embedded Node server or force-refresh the limits page, both of which clear
+  // the in-memory cache; the disk cache keeps those paths from immediately spending
+  // another Claude OAuth usage request.
+  const freshClaudeCache = claudeToken ? readFreshClaudeLimitsCache({ home, nowMs }) : null;
 
   const providerFetch = withFetchTimeout(fetchImpl, providerTimeoutMs);
   const [claudeResult, codexResult, cursor, kimi, gemini, kiro, antigravity, copilot, grok] = await Promise.all([
-    claudeToken && !claudeRetryAtMs
+    claudeToken && !freshClaudeCache && !claudeRetryAtMs
       ? withProviderTimeout(fetchClaudeUsageLimits(claudeToken, { fetchImpl: providerFetch, maxAttempts: 1 }), "Claude", providerTimeoutMs).then(
           (value) => ({ status: "fulfilled", value }),
           (reason) => ({ status: "rejected", reason }),
@@ -2052,6 +2079,8 @@ async function fetchUsageLimitsUncached({
   let claude;
   if (!claudeToken) {
     claude = { configured: false };
+  } else if (freshClaudeCache) {
+    claude = freshClaudeCache;
   } else if (claudeResult && claudeResult.status === "fulfilled") {
     claude = {
       configured: true,
