@@ -217,7 +217,7 @@ function readClaudeCodeCredentialsFile({ home, fsReader } = {}) {
   }
 }
 
-function detectClaudeCodeCredentialsPresence({ platform, securityRunner, home, fsReader } = {}) {
+function detectClaudeCodeCredentialsPresence({ platform = process.platform, securityRunner, home, fsReader } = {}) {
   if (platform === "darwin") {
     for (const service of CLAUDE_CODE_KEYCHAIN_SERVICES) {
       const present = probeMacosKeychainGenericPassword({
@@ -273,7 +273,7 @@ function extractClaudeKeychainSubscription(payload) {
   return { subscriptionType, rateLimitTier };
 }
 
-function detectClaudeCodeSubscriptionDetails({ platform, securityRunner, home, fsReader } = {}) {
+function detectClaudeCodeSubscriptionDetails({ platform = process.platform, securityRunner, home, fsReader } = {}) {
   const rawPayloads = [];
   if (platform === "darwin") {
     for (const service of CLAUDE_CODE_KEYCHAIN_SERVICES) {
@@ -364,7 +364,7 @@ async function detectOpenclawSessionIntegration({ home, env }) {
   };
 }
 
-function readClaudeCodeAccessToken({ platform, securityRunner, home, fsReader } = {}) {
+function readClaudeCodeAccessToken({ platform = process.platform, securityRunner, home, fsReader } = {}) {
   if (platform === "darwin") {
     for (const service of CLAUDE_CODE_KEYCHAIN_SERVICES) {
       try {

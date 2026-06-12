@@ -4,7 +4,11 @@ const path = require("node:path");
 const fs = require("node:fs/promises");
 const { test } = require("node:test");
 
-const { collectLocalSubscriptions } = require("../src/lib/subscriptions");
+const {
+  collectLocalSubscriptions,
+  detectClaudeCodeSubscriptionDetails,
+  readClaudeCodeAccessToken,
+} = require("../src/lib/subscriptions");
 
 function base64UrlEncodeJson(value) {
   const raw = Buffer.from(JSON.stringify(value), "utf8").toString("base64");
@@ -337,6 +341,66 @@ test("collectLocalSubscriptions reads Claude Code credentials from %USERPROFILE%
       rateLimitTier: "tier-1",
     });
     assert.ok(!("accessToken" in subs[0]));
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("Claude Code credential helpers default to the current platform", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-subscriptions-claude-default-platform-"));
+
+  try {
+    if (process.platform === "darwin") {
+      const runner = (cmd, args) => {
+        const service = args?.[args.indexOf("-s") + 1] || "";
+        if (cmd !== "/usr/bin/security" || service !== "Claude Code-credentials") {
+          return { status: 1 };
+        }
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            claudeAiOauth: {
+              accessToken: "darwin-default-token",
+              subscriptionType: "max",
+              rateLimitTier: "tier-1",
+            },
+          }),
+        };
+      };
+
+      assert.equal(readClaudeCodeAccessToken({ securityRunner: runner }), "darwin-default-token");
+      assert.deepEqual(detectClaudeCodeSubscriptionDetails({ securityRunner: runner }), {
+        tool: "claude",
+        provider: "anthropic",
+        product: "subscription",
+        planType: "max",
+        rateLimitTier: "tier-1",
+      });
+      return;
+    }
+
+    if (process.platform === "linux" || process.platform === "win32") {
+      await writeJson(path.join(tmp, ".claude", ".credentials.json"), {
+        claudeAiOauth: {
+          accessToken: "file-default-token",
+          subscriptionType: "max",
+          rateLimitTier: "tier-1",
+        },
+      });
+
+      assert.equal(readClaudeCodeAccessToken({ home: tmp }), "file-default-token");
+      assert.deepEqual(detectClaudeCodeSubscriptionDetails({ home: tmp }), {
+        tool: "claude",
+        provider: "anthropic",
+        product: "subscription",
+        planType: "max",
+        rateLimitTier: "tier-1",
+      });
+      return;
+    }
+
+    assert.equal(readClaudeCodeAccessToken({ home: tmp }), null);
+    assert.equal(detectClaudeCodeSubscriptionDetails({ home: tmp }), null);
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
