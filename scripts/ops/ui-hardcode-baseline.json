@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-10T16:00:43.271Z",
+  "generatedAt": "2026-06-14T02:50:00.831Z",
   "root": "dashboard/src",
   "rules": {
     "colors": "hex/rgb(a) literals",
@@ -306,8 +306,8 @@
       "colors": 0,
       "rawText": 2,
       "rawTextTokens": [
-        "0 ? groups :",
-        "renderProviderGroup(id, dataById[id], effectiveMode)) .filter(Boolean); return ("
+        "(prev === id ? null : id)), ), ) .filter(Boolean); return (",
+        "0 ? groups :"
       ]
     },
     "dashboard/src/ui/dashboard/components/UsageLimitsPanel.test.jsx": {
