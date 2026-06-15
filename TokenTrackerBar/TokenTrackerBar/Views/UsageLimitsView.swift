@@ -136,7 +136,7 @@ struct UsageLimitsView: View {
         .modifier(ProviderClickableStyle(isActive: explainingProvider == id))
         .onTapGesture { explainingProvider = (explainingProvider == id) ? nil : id }
         .popover(isPresented: isOpen, arrowEdge: .trailing) {
-            LimitsExplainContent(providerName: title, specs: specs)
+            LimitsExplainContent(providerName: title, specs: specs, remainingMode: settings.displayMode == .remaining)
         }
     }
 
@@ -544,6 +544,7 @@ private struct LimitWindowSpec: Identifiable {
 private struct LimitsExplainContent: View {
     let providerName: String
     let specs: [LimitWindowSpec]
+    let remainingMode: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -552,7 +553,7 @@ private struct LimitsExplainContent: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(specs) { spec in
-                    Text(Self.line(for: spec))
+                    Text(line(for: spec))
                         .font(.caption)
                         .foregroundStyle(.primary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -561,7 +562,7 @@ private struct LimitsExplainContent: View {
 
             Divider().opacity(0.5)
 
-            Text(Strings.limitsExplainBody)
+            Text(Strings.limitsExplainBody(remaining: remainingMode))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -572,7 +573,7 @@ private struct LimitsExplainContent: View {
 
     /// Live pace numbers + current-rate projection for one window, via the shared
     /// `LimitPace.compute` (same source of truth the bar uses).
-    private static func line(for spec: LimitWindowSpec) -> String {
+    private func line(for spec: LimitWindowSpec) -> String {
         let usedFraction = min(max(spec.pct, 0), 100) / 100.0
         let used = Int((usedFraction * 100).rounded())
         var pace = LimitPace.Result()
@@ -581,12 +582,12 @@ private struct LimitsExplainContent: View {
                 usedFraction: usedFraction,
                 windowSeconds: windowSeconds,
                 secondsUntilReset: max(0, resetDate.timeIntervalSinceNow),
-                remainingMode: false
+                remainingMode: remainingMode
             )
         }
         return Strings.limitWindowExplainLine(
             label: spec.label, used: used, expected: pace.expectedPercent, over: pace.paceOver,
-            runsOutEta: pace.runsOutEta, projectedEnd: pace.projectedEnd
+            runsOutEta: pace.runsOutEta, projectedEnd: pace.projectedEnd, remainingMode: remainingMode
         )
     }
 }

@@ -114,35 +114,42 @@ function LimitBar({ label, pct, reset, mode = LIMIT_DISPLAY_MODES.USED, pacePerc
  * One window's explanation line. Adds only what the bar doesn't already show:
  * pace status + a current-rate projection. Used %, reset time live on the bar.
  */
-function explainLineFor(spec, pace) {
+function explainLineFor(spec, pace, mode) {
   const label = copy(spec.labelKey);
+  const remaining = mode === LIMIT_DISPLAY_MODES.REMAINING;
+  // In remaining mode every percentage flips to "how much is left".
+  const projection = (usedPct) => (remaining ? 100 - usedPct : usedPct);
   // No trusted window length (monthly / billing cycle): just the usage.
   if (pace.expectedPercent == null) {
     const used = Math.round(Math.max(0, Math.min(100, Number(readWindowPct(spec.window, spec.pctField)) || 0)));
-    return copy("limits.explain.used", { label, used });
+    return remaining
+      ? copy("limits.explain.remaining", { label, used: projection(used) })
+      : copy("limits.explain.used", { label, used });
   }
   if (pace.paceOver) {
-    return pace.runsOutEta
-      ? copy("limits.explain.ahead_eta", { label, eta: pace.runsOutEta })
-      : copy("limits.explain.ahead_pct", { label, pct: pace.projectedEnd ?? 100 });
+    if (pace.runsOutEta) return copy("limits.explain.ahead_eta", { label, eta: pace.runsOutEta });
+    const pct = projection(pace.projectedEnd ?? 100);
+    return copy(remaining ? "limits.explain.ahead_pct_remaining" : "limits.explain.ahead_pct", { label, pct });
   }
   const used = Math.round(Math.max(0, Math.min(100, Number(readWindowPct(spec.window, spec.pctField)) || 0)));
-  return copy("limits.explain.on_track", { label, pct: pace.projectedEnd ?? used });
+  const pct = projection(pace.projectedEnd ?? used);
+  return copy(remaining ? "limits.explain.on_track_remaining" : "limits.explain.on_track", { label, pct });
 }
 
-function LimitDetail({ rows }) {
+function LimitDetail({ rows, mode }) {
   if (rows.length === 0) return null;
+  const remaining = mode === LIMIT_DISPLAY_MODES.REMAINING;
   // No own background or extra horizontal padding: it sits on the expanded
   // group's tint and lines up flush-left with the bars above.
   return (
     <div className="mt-1 flex flex-col gap-1">
       {rows.map(({ spec, pace }) => (
         <div key={spec.key} className="text-[11px] leading-snug text-oai-gray-600 dark:text-oai-gray-300">
-          {explainLineFor(spec, pace)}
+          {explainLineFor(spec, pace, mode)}
         </div>
       ))}
       <div className="mt-1 pt-1.5 border-t border-oai-gray-200/70 dark:border-oai-gray-700/50 text-[10.5px] leading-snug text-oai-gray-400 dark:text-oai-gray-500">
-        {copy("limits.explain.body")}
+        {copy(remaining ? "limits.explain.body_remaining" : "limits.explain.body")}
       </div>
     </div>
   );
@@ -241,7 +248,7 @@ function renderConfiguredProvider(id, data, title, mode, expanded, onToggle) {
   return (
     <ToolGroup key={id} name={title} providerId={id} expandable={rows.length > 0} expanded={expanded} onToggle={onToggle}>
       <LimitWindowSection mode={mode} rows={rows} extra={extra} />
-      {expanded ? <LimitDetail rows={rows} /> : null}
+      {expanded ? <LimitDetail rows={rows} mode={mode} /> : null}
     </ToolGroup>
   );
 }

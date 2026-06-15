@@ -307,8 +307,14 @@ enum Strings {
 
     /// One window's line in the explain popover. Adds only what the bar doesn't
     /// already show: pace status + a current-rate projection. Concise on purpose.
-    static func limitWindowExplainLine(label: String, used: Int, expected: Int?, over: Bool, runsOutEta: String?, projectedEnd: Int?) -> String {
+    static func limitWindowExplainLine(label: String, used: Int, expected: Int?, over: Bool, runsOutEta: String?, projectedEnd: Int?, remainingMode: Bool) -> String {
+        // In remaining mode every percentage flips to "how much is left".
+        func projection(_ usedPct: Int) -> Int { remainingMode ? 100 - usedPct : usedPct }
         guard expected != nil else {
+            if remainingMode {
+                let left = projection(used)
+                return t("\(label): \(left)% left", "\(label)：剩余 \(left)%", "\(label)：剩餘 \(left)%", "\(label)：残り \(left)%", "\(label): \(left)% 남음")
+            }
             return t("\(label): \(used)% used", "\(label)：已用 \(used)%", "\(label)：已用 \(used)%", "\(label)：\(used)% 使用", "\(label): \(used)% 사용")
         }
         if over {
@@ -319,14 +325,28 @@ enum Strings {
                          "\(label)：速い、約 \(eta) で上限",
                          "\(label): 빠름, 약 \(eta) 후 소진")
             }
-            let pct = projectedEnd ?? 100
+            let pct = projection(projectedEnd ?? 100)
+            if remainingMode {
+                return t("\(label): ahead of pace, ~\(pct)% left by reset",
+                         "\(label)：偏快，预计剩余 \(pct)%",
+                         "\(label)：偏快，預計剩餘 \(pct)%",
+                         "\(label)：速い、リセットまでに残り約 \(pct)%",
+                         "\(label): 빠름, 초기화 전 약 \(pct)% 남음")
+            }
             return t("\(label): ahead of pace, ~\(pct)% by reset",
                      "\(label)：偏快，预计用到 \(pct)%",
                      "\(label)：偏快，預計用到 \(pct)%",
                      "\(label)：速い、リセットまでに約 \(pct)%",
                      "\(label): 빠름, 초기화 전 약 \(pct)%")
         }
-        let pct = projectedEnd ?? used
+        let pct = projection(projectedEnd ?? used)
+        if remainingMode {
+            return t("\(label): on track, ~\(pct)% left by reset",
+                     "\(label)：节奏正常，预计剩余 \(pct)%",
+                     "\(label)：節奏正常，預計剩餘 \(pct)%",
+                     "\(label)：順調、リセットまでに残り約 \(pct)%",
+                     "\(label): 양호, 초기화 전 약 \(pct)% 남음")
+        }
         return t("\(label): on track, ~\(pct)% by reset",
                  "\(label)：节奏正常，预计用到 \(pct)%",
                  "\(label)：節奏正常，預計用到 \(pct)%",
@@ -336,8 +356,18 @@ enum Strings {
 
     /// Explanation shown in the side popover when a provider block is clicked.
     /// Teaches how to read the bars — especially the pace mark.
-    static var limitsExplainBody: String {
-        t(
+    static func limitsExplainBody(remaining: Bool) -> String {
+        if remaining {
+            // Remaining mode fills with leftover quota: ahead = fill falls short.
+            return t(
+                "The mark is the even-pace point; fill short of it means you're ahead.",
+                "竖标为匀速到现在应到的位置，填充不足即为偏快。",
+                "豎標為勻速到現在應到的位置，填充不足即為偏快。",
+                "目盛りは一定ペースの位置。塗りが届かないと速いペースです。",
+                "표시선은 균일 페이스 위치이며, 채움이 못 미치면 빠른 편입니다."
+            )
+        }
+        return t(
             "The mark is the even-pace point; fill past it means you're ahead.",
             "竖标为匀速到现在应到的位置，填充超过即为偏快。",
             "豎標為勻速到現在應到的位置，填充超過即為偏快。",
