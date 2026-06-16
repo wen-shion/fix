@@ -22,23 +22,41 @@ struct LimitResetEvent: Equatable {
 /// survives relaunches and never double-fires (a cooldown suppresses repeats).
 struct WeeklyLimitResetDetector {
 
-    /// Only celebrate if usage had climbed at least this high (percent) before the drop.
-    var highThreshold: Double = 50
-    /// The reset must drop usage by at least this many points — a rollover, not noise.
-    var minDrop: Double = 30
+    /// A real rollover must drop usage by at least this much — a small floor that
+    /// confirms the window actually emptied, and guards providers (e.g. Kiro) whose
+    /// `reset_at` slides forward continuously instead of jumping only on rollover.
+    /// Not a "used enough to celebrate" gate: any genuine reset fires.
+    var minDrop: Double = 5
+    /// The window's `reset_at` must advance by at least this much to count as a real
+    /// rollover — filters sub-second jitter in provider timestamps. A true rollover
+    /// jumps hours-to-days ahead, so this never suppresses a genuine reset.
+    var resetAdvanceTolerance: TimeInterval = 60
     /// After firing for a key, suppress re-fires for this long.
     var cooldown: TimeInterval = 3600
 
     struct Snapshot: Codable, Equatable {
         var lastPercent: [String: Double] = [:]
         var lastEventAt: [String: Double] = [:]   // unix seconds
+        var lastResetAt: [String: Double] = [:]   // unix seconds — last seen window reset_at
+
+        init() {}
+
+        /// Tolerate older persisted snapshots that predate `lastResetAt` (or any
+        /// missing field) so an upgrade keeps the existing baseline + cooldown
+        /// memory instead of discarding it.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            lastPercent = try c.decodeIfPresent([String: Double].self, forKey: .lastPercent) ?? [:]
+            lastEventAt = try c.decodeIfPresent([String: Double].self, forKey: .lastEventAt) ?? [:]
+            lastResetAt = try c.decodeIfPresent([String: Double].self, forKey: .lastResetAt) ?? [:]
+        }
     }
 
     /// Given the persisted snapshot and the current readings, return the events to
     /// celebrate plus the snapshot to persist for next time. The snapshot *is* the
     /// memory of the previous reading, so callers need not track the prior response.
     func evaluate(
-        readings: [(provider: String, windowKey: String, usedPercent: Double)],
+        readings: [(provider: String, windowKey: String, usedPercent: Double, resetAt: Double?)],
         snapshot: Snapshot,
         now: Double
     ) -> (events: [LimitResetEvent], snapshot: Snapshot) {
@@ -47,16 +65,25 @@ struct WeeklyLimitResetDetector {
 
         for reading in readings {
             let key = reading.windowKey
-            let prev = snapshot.lastPercent[key]
+            let prevPercent = snapshot.lastPercent[key]
+            let prevReset = snapshot.lastResetAt[key]
             updated.lastPercent[key] = reading.usedPercent
+            if let resetAt = reading.resetAt { updated.lastResetAt[key] = resetAt }   // keep last value when missing
 
-            guard let prev else { continue }            // first observation: just record a baseline
-            let dropped = prev - reading.usedPercent
-            guard prev >= highThreshold, dropped >= minDrop else { continue }
+            // Need a full prior baseline (percent + reset time) and a current reset
+            // time. First observation, or a window without a reset timestamp, only
+            // records a baseline — never celebrates.
+            guard let prevPercent, let prevReset, let curReset = reading.resetAt else { continue }
+            // The window must have actually rolled over: its reset_at advanced to a
+            // new period, not merely a percentage that dipped.
+            guard curReset > prevReset + resetAdvanceTolerance else { continue }
+            // … and the rollover actually emptied the window (also guards Kiro's
+            // continuously-sliding reset_at from firing without a real drop).
+            guard prevPercent - reading.usedPercent >= minDrop else { continue }
             if let last = snapshot.lastEventAt[key], now - last < cooldown { continue }
 
             updated.lastEventAt[key] = now
-            events.append(LimitResetEvent(provider: reading.provider, windowKey: key, previousPercent: prev))
+            events.append(LimitResetEvent(provider: reading.provider, windowKey: key, previousPercent: prevPercent))
         }
 
         return (events, updated)
@@ -92,24 +119,36 @@ extension WeeklyLimitResetDetector {
 
 // MARK: - Reading extraction
 
+/// Parse an ISO-8601 reset timestamp into unix seconds, tolerating the
+/// fractional-seconds variant. Mirrors the display-side parser in `UsageLimitsView`.
+private func parseResetSeconds(iso: String?) -> Double? {
+    guard let iso else { return nil }
+    let fmt = ISO8601DateFormatter()
+    fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = fmt.date(from: iso) { return date.timeIntervalSince1970 }
+    fmt.formatOptions = [.withInternetDateTime]
+    return fmt.date(from: iso)?.timeIntervalSince1970
+}
+
 extension UsageLimitsResponse {
-    /// Flatten every provider's windows into `(provider, windowKey, usedPercent)`
-    /// tuples on a 0–100 scale, skipping providers that errored or are unconfigured.
-    func limitWindowReadings() -> [(provider: String, windowKey: String, usedPercent: Double)] {
-        var out: [(provider: String, windowKey: String, usedPercent: Double)] = []
+    /// Flatten every provider's windows into `(provider, windowKey, usedPercent, resetAt)`
+    /// tuples (percent on a 0–100 scale, resetAt in unix seconds), skipping providers
+    /// that errored or are unconfigured.
+    func limitWindowReadings() -> [(provider: String, windowKey: String, usedPercent: Double, resetAt: Double?)] {
+        var out: [(provider: String, windowKey: String, usedPercent: Double, resetAt: Double?)] = []
 
         func addGeneric(_ provider: String, _ configured: Bool, _ error: String?, _ windows: [(String, GenericLimitWindow?)]) {
             guard configured, error == nil else { return }
             for (name, window) in windows {
                 guard let window else { continue }
-                out.append((provider, "\(provider).\(name)", window.usedPercent))
+                out.append((provider, "\(provider).\(name)", window.usedPercent, parseResetSeconds(iso: window.resetAt)))
             }
         }
 
         if claude.configured, claude.error == nil {
             for (name, window) in [("5h", claude.fiveHour), ("7d", claude.sevenDay), ("opus", claude.sevenDayOpus)] {
                 guard let window else { continue }
-                out.append(("claude", "claude.\(name)", window.utilization))
+                out.append(("claude", "claude.\(name)", window.utilization, parseResetSeconds(iso: window.resetsAt)))
             }
         }
 
@@ -120,7 +159,7 @@ extension UsageLimitsResponse {
             ]
             for (name, window) in windows {
                 guard let window else { continue }
-                out.append(("codex", "codex.\(name)", Double(window.usedPercent)))
+                out.append(("codex", "codex.\(name)", Double(window.usedPercent), window.resetAt.map(Double.init)))
             }
         }
 

@@ -2,49 +2,91 @@ import XCTest
 
 final class WeeklyLimitResetDetectorTests: XCTestCase {
 
-    private let detector = WeeklyLimitResetDetector()   // defaults: high 50, drop 30, cooldown 3600
+    private let detector = WeeklyLimitResetDetector()   // defaults: drop 5, tolerance 60, cooldown 3600
 
-    private func reading(_ pct: Double) -> [(provider: String, windowKey: String, usedPercent: Double)] {
-        [("codex", "codex.primary", pct)]
+    private func reading(_ pct: Double, resetAt: Double?) -> [(provider: String, windowKey: String, usedPercent: Double, resetAt: Double?)] {
+        [("codex", "codex.primary", pct, resetAt)]
     }
 
     func testFirstObservationRecordsBaselineWithoutEvent() {
-        let (events, snap) = detector.evaluate(readings: reading(90), snapshot: .init(), now: 1000)
+        let (events, snap) = detector.evaluate(readings: reading(90, resetAt: 5000), snapshot: .init(), now: 1000)
         XCTAssertTrue(events.isEmpty, "first observation should never celebrate")
         XCTAssertEqual(snap.lastPercent["codex.primary"], 90)
+        XCTAssertEqual(snap.lastResetAt["codex.primary"], 5000)
     }
 
     func testHighThenResetFires() {
-        let (_, baseline) = detector.evaluate(readings: reading(90), snapshot: .init(), now: 1000)
-        let (events, _) = detector.evaluate(readings: reading(4), snapshot: baseline, now: 2000)
+        // High usage, then the window rolls over: reset_at jumps to a new period and usage empties.
+        let (_, baseline) = detector.evaluate(readings: reading(90, resetAt: 5000), snapshot: .init(), now: 1000)
+        let (events, _) = detector.evaluate(readings: reading(4, resetAt: 9000), snapshot: baseline, now: 2000)
         XCTAssertEqual(events.count, 1)
         XCTAssertEqual(events.first?.provider, "codex")
         XCTAssertEqual(events.first?.previousPercent, 90)
     }
 
-    func testLowUsageRolloverDoesNotFire() {
-        // Was only at 20% → not "constrained", so the reset isn't worth celebrating.
-        let (_, baseline) = detector.evaluate(readings: reading(20), snapshot: .init(), now: 1000)
-        let (events, _) = detector.evaluate(readings: reading(0), snapshot: baseline, now: 2000)
+    func testModerateUsageResetFires() {
+        // No "used enough" gate: a window used to only 20% still celebrates when it
+        // genuinely rolls over (reset_at advances + usage empties).
+        let (_, baseline) = detector.evaluate(readings: reading(20, resetAt: 5000), snapshot: .init(), now: 1000)
+        let (events, _) = detector.evaluate(readings: reading(0, resetAt: 9000), snapshot: baseline, now: 2000)
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.previousPercent, 20)
+    }
+
+    func testNegligibleDropDoesNotFire() {
+        // reset_at advanced, but usage barely moved (4 → 1): below the minDrop floor,
+        // so it's treated as noise rather than a real empty-out and stays quiet.
+        let (_, baseline) = detector.evaluate(readings: reading(4, resetAt: 5000), snapshot: .init(), now: 1000)
+        let (events, _) = detector.evaluate(readings: reading(1, resetAt: 9000), snapshot: baseline, now: 2000)
         XCTAssertTrue(events.isEmpty)
     }
 
-    func testSmallDropDoesNotFire() {
-        // 90 → 75 is normal fluctuation, not a rollover.
-        let (_, baseline) = detector.evaluate(readings: reading(90), snapshot: .init(), now: 1000)
-        let (events, _) = detector.evaluate(readings: reading(75), snapshot: baseline, now: 2000)
+    func testPercentDropWithoutResetAdvanceDoesNotFire() {
+        // Regression for the reported bug: on cold launch the percent reads lower than
+        // last time, but the window's reset_at has NOT advanced (still "4h from now").
+        // That is not a reset and must not celebrate.
+        let (_, baseline) = detector.evaluate(readings: reading(80, resetAt: 5000), snapshot: .init(), now: 1000)
+        let (events, _) = detector.evaluate(readings: reading(30, resetAt: 5000), snapshot: baseline, now: 2000)
+        XCTAssertTrue(events.isEmpty, "a percent drop without a reset_at rollover must not celebrate")
+    }
+
+    func testMissingResetTimeDoesNotFire() {
+        // Windows without a reset timestamp can't be judged reliably → never celebrate.
+        let (_, baseline) = detector.evaluate(readings: reading(90, resetAt: nil), snapshot: .init(), now: 1000)
+        let (events, _) = detector.evaluate(readings: reading(4, resetAt: nil), snapshot: baseline, now: 2000)
         XCTAssertTrue(events.isEmpty)
+    }
+
+    func testSlidingResetWithoutUsageDropDoesNotFire() {
+        // Kiro-style: reset_at slides forward every poll, but usage stayed high.
+        // The minDrop guard prevents a false celebration.
+        let (_, baseline) = detector.evaluate(readings: reading(80, resetAt: 5000), snapshot: .init(), now: 1000)
+        let (events, _) = detector.evaluate(readings: reading(82, resetAt: 5300), snapshot: baseline, now: 1300)
+        XCTAssertTrue(events.isEmpty, "advancing reset_at without a usage drop must not celebrate")
     }
 
     func testCooldownSuppressesRepeat() {
-        let (_, baseline) = detector.evaluate(readings: reading(90), snapshot: .init(), now: 1000)
-        let (firstEvents, afterFirst) = detector.evaluate(readings: reading(2), snapshot: baseline, now: 2000)
+        let (_, baseline) = detector.evaluate(readings: reading(90, resetAt: 5000), snapshot: .init(), now: 1000)
+        let (firstEvents, afterFirst) = detector.evaluate(readings: reading(2, resetAt: 9000), snapshot: baseline, now: 2000)
         XCTAssertEqual(firstEvents.count, 1)
 
-        // Climb high again and reset within the cooldown window → suppressed.
-        let (_, climbed) = detector.evaluate(readings: reading(95), snapshot: afterFirst, now: 2500)
-        let (repeatEvents, _) = detector.evaluate(readings: reading(1), snapshot: climbed, now: 3000)
+        // Climb high again within the same window (reset_at unchanged), then roll over
+        // again within the cooldown window → suppressed.
+        let (_, climbed) = detector.evaluate(readings: reading(95, resetAt: 9000), snapshot: afterFirst, now: 2500)
+        let (repeatEvents, _) = detector.evaluate(readings: reading(1, resetAt: 13000), snapshot: climbed, now: 3000)
         XCTAssertTrue(repeatEvents.isEmpty, "within cooldown the same window must not re-fire")
+    }
+
+    func testLegacySnapshotWithoutResetFieldDecodes() throws {
+        // Snapshots persisted before `lastResetAt` existed must still decode and keep
+        // their percent + cooldown memory instead of being discarded on upgrade.
+        let legacy = """
+        { "lastPercent": { "codex.primary": 70 }, "lastEventAt": { "codex.primary": 1000 } }
+        """
+        let snap = try JSONDecoder().decode(WeeklyLimitResetDetector.Snapshot.self, from: Data(legacy.utf8))
+        XCTAssertEqual(snap.lastPercent["codex.primary"], 70)
+        XCTAssertEqual(snap.lastEventAt["codex.primary"], 1000)
+        XCTAssertTrue(snap.lastResetAt.isEmpty)
     }
 
     func testReadingsExtractionFromResponse() throws {
@@ -65,5 +107,6 @@ final class WeeklyLimitResetDetectorTests: XCTestCase {
         XCTAssertEqual(readings.count, 1)
         XCTAssertEqual(readings.first?.windowKey, "codex.primary")
         XCTAssertEqual(readings.first?.usedPercent, 80)
+        XCTAssertEqual(readings.first?.resetAt, 1000)
     }
 }
