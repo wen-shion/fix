@@ -39,10 +39,10 @@ it("uses the same compact conversations label across periods", () => {
 it("localizes compact rolling stats labels", () => {
   const cases = [
     ["en", ["7d", "30d", "avg", "convs"]],
-    ["zh-CN", ["7 天", "30 天", "平均", "对话"]],
-    ["zh-TW", ["7 天", "30 天", "平均", "對話"]],
-    ["ja", ["7 日", "30 日", "平均", "会話"]],
-    ["ko", ["7 일", "30 일", "평균", "대화"]],
+    ["zh-CN", ["7 天", "30 天", "平均", "对话"]],
+    ["zh-TW", ["7 天", "30 天", "平均", "對話"]],
+    ["ja", ["7日", "30日", "平均", "会話"]],
+    ["ko", ["7일", "30일", "평균", "대화"]],
   ];
 
   for (const [locale, labels] of cases) {
