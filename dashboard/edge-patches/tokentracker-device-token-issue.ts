@@ -151,9 +151,13 @@ export default async function (req: Request): Promise<Response> {
   //      suffix), so a clientId fallback or a regenerated config.json minted
   //      a brand-new "device" and re-uploaded history under it (28.4B mirrored
   //      tokens across 18 users until the 2026-06 cleanup).
-  //   2. Legacy adoption — an active same-name row without machine_id is
-  //      claimed by backfilling machine_id, migrating existing installs
-  //      in-place on their next token issue/rotation.
+  //   2. Legacy adoption — an active machine_id-less row (matching the current
+  //      suffixed name OR the pre-suffix base name "Token Tracker (dashboard)")
+  //      is claimed by backfilling machine_id, migrating old installs in-place
+  //      on their next token issue and converging old/new-version clients of one
+  //      machine onto ONE device_id (issue #187: the exact-suffixed-only match
+  //      missed the no-suffix orphan, so the first machine_id login minted a
+  //      SECOND device and the account view SUMmed both).
   //   3. Insert — new machine. A unique-violation race (concurrent first
   //      login from two contexts) falls back to re-selecting the winner.
   //
@@ -179,12 +183,21 @@ export default async function (req: Request): Promise<Response> {
     }
 
     if (!deviceId) {
+      // Adopt an orphan under either the current suffixed name or the pre-suffix
+      // base name. machineId.slice(0,8) is the 8-hex suffix; strip " #<hex8>" to
+      // recover the base. A machine first seen under the old no-suffix scheme has
+      // a base-named orphan the exact-suffixed match would skip, splitting it off
+      // as a new device (issue #187). Adopting it backfills machine_id so the
+      // machine resolves to one row thereafter.
+      const legacyBaseName = deviceName.replace(/ #[0-9a-fA-F]{8}$/, "");
+      const legacyNames =
+        legacyBaseName === deviceName ? [deviceName] : [deviceName, legacyBaseName];
       const { data: legacy } = await dbClient.database
         .from("tokentracker_devices")
         .select("id")
         .eq("user_id", userId)
         .eq("platform", platform)
-        .eq("device_name", deviceName)
+        .in("device_name", legacyNames)
         .is("revoked_at", null)
         .is("machine_id", null)
         .order("created_at", { ascending: true })

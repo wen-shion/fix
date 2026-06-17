@@ -44,28 +44,42 @@ CREATE FUNCTION leaderboard_usage_grouped(
   p_to timestamptz
 ) RETURNS jsonb
 LANGUAGE sql STABLE
+-- The 'total' period DISTINCT-dedupes the entire hourly history in one pass;
+-- the default 4 MB work_mem spills that hash to disk and the RPC creeps toward
+-- the leaderboard-refresh edge's 30s budget. A larger work_mem keeps it in
+-- memory (kept the whole-history refresh ~13-20s, comfortably under budget).
+SET work_mem TO '256MB'
+SET hash_mem_multiplier TO '4'
 AS $func$
   WITH cfg AS (
     -- Keep in sync with src/lib/source-metadata.js ACCOUNT_LEVEL_SOURCES.
     SELECT ARRAY['cursor']::text[] AS account_sources
   ),
-  hourly AS (
-    -- Machine-level: SUM across the user's ACTIVE devices, per (user, source,
-    -- model, hour).
-    SELECT h.user_id, h.source, h.model, h.hour_start,
-      SUM(h.total_tokens)::bigint                AS total_tokens,
-      SUM(h.input_tokens)::bigint                AS input_tokens,
-      SUM(h.output_tokens)::bigint               AS output_tokens,
-      SUM(h.cached_input_tokens)::bigint         AS cached_input_tokens,
-      SUM(h.cache_creation_input_tokens)::bigint AS cache_creation_input_tokens,
-      SUM(h.reasoning_output_tokens)::bigint     AS reasoning_output_tokens
+  -- Hour-grain canonical rows. TWO passes total (DISTINCT + the per_usm GROUP BY)
+  -- so the whole-history 'total' refresh stays within the edge's 30s budget --
+  -- an intermediate per-hour SUM would add a third pass and tip 'total' over.
+  rows_hg AS (
+    -- Machine-level: collapse rows byte-identical across multiple device_ids
+    -- before summing. One physical machine accumulates several device_ids over
+    -- time (identity-scheme drift: no-suffix name -> "#suffix" name -> machine_id
+    -- anchor; plus PR #184's full-history replay landing on a fresh device_id).
+    -- Naively summing those active rows double-counts the ranking (the 2026-06
+    -- "2x token" reports, issue #187). DISTINCT folds rows identical across ALL
+    -- six token columns into one; genuinely distinct per-machine rows differ in
+    -- their token columns, survive, and are summed by per_usm (multi-machine
+    -- totals preserved -- Discussion #101). Read-time dedup is durable: a replay
+    -- re-mirrors identical rows and they re-collapse, unlike a one-shot DELETE
+    -- (scripts/ops/tokentracker-hourly-mirror-row-dedup.sql) which the
+    -- duplicates kept outgrowing.
+    SELECT DISTINCT h.user_id, h.source, h.model, h.hour_start,
+      h.total_tokens, h.input_tokens, h.output_tokens, h.cached_input_tokens,
+      h.cache_creation_input_tokens, h.reasoning_output_tokens
     FROM tokentracker_hourly h
     CROSS JOIN cfg
     JOIN tokentracker_devices d
       ON d.id = h.device_id AND d.revoked_at IS NULL
     WHERE h.hour_start >= p_from AND h.hour_start < p_to
       AND NOT (h.source = ANY(cfg.account_sources))
-    GROUP BY h.user_id, h.source, h.model, h.hour_start
 
     UNION ALL
 
@@ -91,15 +105,15 @@ AS $func$
   ),
   per_usm AS (
     SELECT
-      hourly.user_id, hourly.source, hourly.model,
-      SUM(hourly.total_tokens)::bigint                AS total_tokens,
-      SUM(hourly.input_tokens)::bigint                AS input_tokens,
-      SUM(hourly.output_tokens)::bigint               AS output_tokens,
-      SUM(hourly.cached_input_tokens)::bigint         AS cached_input_tokens,
-      SUM(hourly.cache_creation_input_tokens)::bigint AS cache_creation_input_tokens,
-      SUM(hourly.reasoning_output_tokens)::bigint     AS reasoning_output_tokens
-    FROM hourly
-    GROUP BY hourly.user_id, hourly.source, hourly.model
+      rows_hg.user_id, rows_hg.source, rows_hg.model,
+      SUM(rows_hg.total_tokens)::bigint                AS total_tokens,
+      SUM(rows_hg.input_tokens)::bigint                AS input_tokens,
+      SUM(rows_hg.output_tokens)::bigint               AS output_tokens,
+      SUM(rows_hg.cached_input_tokens)::bigint         AS cached_input_tokens,
+      SUM(rows_hg.cache_creation_input_tokens)::bigint AS cache_creation_input_tokens,
+      SUM(rows_hg.reasoning_output_tokens)::bigint     AS reasoning_output_tokens
+    FROM rows_hg
+    GROUP BY rows_hg.user_id, rows_hg.source, rows_hg.model
   )
   SELECT COALESCE(
            jsonb_agg(to_jsonb(per_usm.*) ORDER BY per_usm.user_id, per_usm.source, per_usm.model),

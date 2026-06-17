@@ -429,10 +429,12 @@ export default async function (req: Request): Promise<Response> {
     nextDay.setUTCDate(nextDay.getUTCDate() + 1);
     const rangeEnd = nextDay.toISOString();
 
+    const __t0 = Date.now();
     const { data: groupedData, error: rpcErr } = await client.database.rpc(
       "leaderboard_usage_grouped",
       { p_from: rangeStart, p_to: rangeEnd },
     );
+    const __tAfterRpc = Date.now();
     if (rpcErr) {
       logRefreshEvent({
         event: "period_error",
@@ -505,18 +507,29 @@ export default async function (req: Request): Promise<Response> {
     // {data: null, error}. The bug surfaced once the all-time leaderboard
     // crossed ~80 users and produced an entirely Anonymous snapshot. 25
     // keeps the URL well under 1.5 KB regardless of user count.
-    for (let i = 0; i < userIds.length; i += 25) {
-      const batch = userIds.slice(i, i + 25);
-      const { data: settings, error: settingsErr } = await client.database
-        .from("tokentracker_user_settings")
-        .select("user_id, leaderboard_public, leaderboard_anonymous, github_url, show_github_url")
-        .in("user_id", batch);
-
+    //
+    // The 25-batches run CONCURRENTLY (Promise.all): for the 'total' period
+    // (hundreds of users → ~16 batches) the old serial await-per-batch loop
+    // cost ~16 × ~450ms ≈ 7s for THIS loop alone, and three such loops plus the
+    // RPC blew past the edge's 30s execution budget (the total-period refresh
+    // had been timing out, leaving the public all-time board on a stale,
+    // pre-dedup snapshot). Firing the batches at once drops each loop to ~1
+    // round-trip of wall time.
+    const idBatches: string[][] = [];
+    for (let i = 0; i < userIds.length; i += 25) idBatches.push(userIds.slice(i, i + 25));
+    const settingsResults = await Promise.all(
+      idBatches.map((batch) =>
+        client.database
+          .from("tokentracker_user_settings")
+          .select("user_id, leaderboard_public, leaderboard_anonymous, github_url, show_github_url")
+          .in("user_id", batch),
+      ),
+    );
+    for (const { data: settings, error: settingsErr } of settingsResults) {
       if (settingsErr) {
         logRefreshEvent({
           event: "user_settings_fetch_error",
           period,
-          batch_size: batch.length,
           error: settingsErr.message,
         });
       }
@@ -527,20 +540,21 @@ export default async function (req: Request): Promise<Response> {
       }
     }
 
-    // --- Fetch display_name/avatar_url from auth.users ---
+    // --- Fetch display_name/avatar_url from auth.users (concurrent batches) ---
     const userProfiles = new Map<string, { display_name: string | null; avatar_url: string | null }>();
-    for (let i = 0; i < userIds.length; i += 25) {
-      const batch = userIds.slice(i, i + 25);
-      const { data: users, error: profilesErr } = await client.database
-        .from("tokentracker_user_profiles")
-        .select("user_id, display_name, avatar_url")
-        .in("user_id", batch);
-
+    const profilesResults = await Promise.all(
+      idBatches.map((batch) =>
+        client.database
+          .from("tokentracker_user_profiles")
+          .select("user_id, display_name, avatar_url")
+          .in("user_id", batch),
+      ),
+    );
+    for (const { data: users, error: profilesErr } of profilesResults) {
       if (profilesErr) {
         logRefreshEvent({
           event: "user_profiles_fetch_error",
           period,
-          batch_size: batch.length,
           error: profilesErr.message,
         });
       }
@@ -551,21 +565,26 @@ export default async function (req: Request): Promise<Response> {
       }
     }
 
-    // Fallback: existing snapshots for users not in auth.users
+    // Fallback: existing snapshots for users not in auth.users (concurrent).
+    const missingBatches: string[][] = [];
     for (let i = 0; i < userIds.length; i += 25) {
-      if ([...userIds.slice(i, i + 25)].every(id => userProfiles.has(id))) continue;
-      const missing = userIds.slice(i, i + 25).filter(id => !userProfiles.has(id));
-      if (missing.length === 0) continue;
-      const { data: existing, error: fallbackErr } = await client.database
-        .from("tokentracker_leaderboard_snapshots")
-        .select("user_id, display_name, avatar_url")
-        .in("user_id", missing)
-        .order("generated_at", { ascending: false });
+      const missing = userIds.slice(i, i + 25).filter((id) => !userProfiles.has(id));
+      if (missing.length > 0) missingBatches.push(missing);
+    }
+    const fallbackResults = await Promise.all(
+      missingBatches.map((missing) =>
+        client.database
+          .from("tokentracker_leaderboard_snapshots")
+          .select("user_id, display_name, avatar_url")
+          .in("user_id", missing)
+          .order("generated_at", { ascending: false }),
+      ),
+    );
+    for (const { data: existing, error: fallbackErr } of fallbackResults) {
       if (fallbackErr) {
         logRefreshEvent({
           event: "snapshot_fallback_fetch_error",
           period,
-          batch_size: missing.length,
           error: fallbackErr.message,
         });
       }
@@ -577,6 +596,8 @@ export default async function (req: Request): Promise<Response> {
         }
       }
     }
+
+    const __tAfterFetch = Date.now();
 
     // --- Rank users by total_tokens DESC ---
     const sorted = Array.from(aggMap.entries()).sort((a, b) => b[1].total_tokens - a[1].total_tokens);
@@ -664,6 +685,11 @@ export default async function (req: Request): Promise<Response> {
       aggregated_users: aggMap.size,
       upserted: upsertRows.length,
       skipped: false,
+      // Stage timing — the 'total' period runs the whole-history RPC, whose
+      // duration approaches the edge's 30s execution budget; track rpc_ms so a
+      // creep toward the ceiling is visible before it starts failing again.
+      rpc_ms: __tAfterRpc - __t0,
+      fetch_ms: __tAfterFetch - __tAfterRpc,
       duration_ms: Date.now() - periodStartedAt,
     });
   }

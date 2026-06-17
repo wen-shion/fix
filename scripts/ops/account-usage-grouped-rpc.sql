@@ -88,22 +88,44 @@ AS $func$
   ),
   -- Stage 1: canonicalize to the raw hour grain.
   hourly AS (
-    -- Machine-level: SUM across the user's ACTIVE devices.
-    SELECT h.hour_start, h.source, h.model,
-      SUM(h.total_tokens)::bigint                AS total_tokens,
-      SUM(h.input_tokens)::bigint                AS input_tokens,
-      SUM(h.output_tokens)::bigint               AS output_tokens,
-      SUM(h.cached_input_tokens)::bigint         AS cached_input_tokens,
-      SUM(h.cache_creation_input_tokens)::bigint AS cache_creation_input_tokens,
-      SUM(h.reasoning_output_tokens)::bigint     AS reasoning_output_tokens,
-      SUM(h.conversations)::bigint               AS conversations
-    FROM tokentracker_hourly h CROSS JOIN cfg
-    WHERE h.user_id = p_user_id
-      AND h.hour_start >= p_from
-      AND h.hour_start <  p_to
-      AND NOT (h.source = ANY(cfg.account_sources))
-      AND h.device_id = ANY(p_device_ids)
-    GROUP BY h.hour_start, h.source, h.model
+    -- Machine-level: SUM across the user's ACTIVE devices, but FIRST collapse
+    -- rows that are byte-identical across multiple device_ids. One physical
+    -- machine accumulates several device_ids over time (identity-scheme drift:
+    -- no-suffix name -> "#suffix" name -> machine_id anchor; plus PR #184's
+    -- full-history replay landing on a fresh device_id). Naively summing those
+    -- active rows double-counts (the 2026-06 "2x token" reports, issue #187).
+    -- The inner GROUP BY folds rows identical across ALL six token columns into
+    -- one (MAX(conversations) so a conversations-only difference can't reinflate
+    -- the token sum); genuinely distinct per-machine rows differ in their token
+    -- columns, survive the fold, and STILL sum -- so legitimate multi-machine
+    -- totals are preserved (Discussion #101). Read-time dedup is durable: a
+    -- replay re-mirrors identical rows and they re-collapse, unlike a one-shot
+    -- DELETE (scripts/ops/tokentracker-hourly-mirror-row-dedup.sql) which the
+    -- duplicates kept outgrowing.
+    SELECT dd.hour_start, dd.source, dd.model,
+      SUM(dd.total_tokens)::bigint                AS total_tokens,
+      SUM(dd.input_tokens)::bigint                AS input_tokens,
+      SUM(dd.output_tokens)::bigint               AS output_tokens,
+      SUM(dd.cached_input_tokens)::bigint         AS cached_input_tokens,
+      SUM(dd.cache_creation_input_tokens)::bigint AS cache_creation_input_tokens,
+      SUM(dd.reasoning_output_tokens)::bigint     AS reasoning_output_tokens,
+      SUM(dd.conversations)::bigint               AS conversations
+    FROM (
+      SELECT h.hour_start, h.source, h.model,
+        h.total_tokens, h.input_tokens, h.output_tokens, h.cached_input_tokens,
+        h.cache_creation_input_tokens, h.reasoning_output_tokens,
+        MAX(h.conversations) AS conversations
+      FROM tokentracker_hourly h CROSS JOIN cfg
+      WHERE h.user_id = p_user_id
+        AND h.hour_start >= p_from
+        AND h.hour_start <  p_to
+        AND NOT (h.source = ANY(cfg.account_sources))
+        AND h.device_id = ANY(p_device_ids)
+      GROUP BY h.hour_start, h.source, h.model,
+        h.total_tokens, h.input_tokens, h.output_tokens, h.cached_input_tokens,
+        h.cache_creation_input_tokens, h.reasoning_output_tokens
+    ) dd
+    GROUP BY dd.hour_start, dd.source, dd.model
 
     UNION ALL
 
