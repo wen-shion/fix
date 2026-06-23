@@ -10,7 +10,9 @@ const {
   parseClaudeIncremental,
   parseGeminiIncremental,
   parseOpencodeIncremental,
+  parseOpencodeDbIncremental,
   readOpencodeDbMessages,
+  readZcodeDbMessages,
   parseKiroIncremental,
   parseHermesIncremental,
   resolveHermesPath,
@@ -1340,6 +1342,131 @@ test("readOpencodeDbMessages falls back to node:sqlite when sqlite3 CLI is unava
     assert.equal(rows[0].sessionID, "ses_db_1");
     assert.equal(rows[0].data.modelID, "deepseek-v4-flash-free");
     assert.equal(rows[0].data.tokens.input, 34);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+// Build a fake node:sqlite injection that returns the given OpenCode-shaped
+// message objects as `message` table rows (id/session_id/time_updated/data).
+function fakeZcodeSqliteOptions(dbPath, messages) {
+  return {
+    execFileSync() {
+      throw new Error("spawn sqlite3 ENOENT");
+    },
+    requireFn(name) {
+      assert.equal(name, "node:sqlite");
+      return {
+        DatabaseSync: class FakeDatabaseSync {
+          constructor(actualDbPath, options) {
+            assert.equal(actualDbPath, dbPath);
+            assert.deepEqual(options, { readOnly: true });
+          }
+          prepare(sql) {
+            assert.match(sql, /FROM message/);
+            return {
+              all() {
+                return messages.map((m, i) => ({
+                  id: m.id || `msg_${i}`,
+                  session_id: m.sessionID || `ses_${i}`,
+                  time_updated: m.time?.completed || 0,
+                  data: JSON.stringify(m),
+                }));
+              },
+            };
+          }
+          close() {}
+        },
+      };
+    },
+    stderr: { write() {} },
+  };
+}
+
+test("readZcodeDbMessages keeps only Z.ai/BigModel rows, drops bundled sub-agent turns", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-zcode-db-"));
+  try {
+    const dbPath = path.join(tmp, "db.sqlite");
+    await fs.writeFile(dbPath, "", "utf8");
+
+    const base = {
+      created: "2026-06-15T09:00:00.000Z",
+      completed: "2026-06-15T09:00:12.000Z",
+      tokens: { input: 100, output: 20, reasoning: 0, cached: 50, cacheWrite: 0 },
+    };
+    const messages = [
+      // ZCode-native (its own GLM agent via Z.ai / BigModel) — KEEP
+      { ...buildOpencodeMessage({ ...base, modelID: "GLM-5.2" }), id: "z1", sessionID: "s1", providerID: "builtin:zai-start-plan" },
+      { ...buildOpencodeMessage({ ...base, modelID: "GLM-5-Turbo" }), id: "z2", sessionID: "s1", providerID: "builtin:bigmodel-coding-plan" },
+      // Bundled sub-agents ZCode can orchestrate — already counted by the
+      // standalone Claude/Codex parsers, so DROP (anthropic/openai providerID).
+      { ...buildOpencodeMessage({ ...base, modelID: "claude-opus-4-8" }), id: "a1", sessionID: "s2", providerID: "anthropic" },
+      { ...buildOpencodeMessage({ ...base, modelID: "gpt-5.2-codex" }), id: "o1", sessionID: "s3", providerID: "openai" },
+    ];
+
+    const rows = readZcodeDbMessages(dbPath, fakeZcodeSqliteOptions(dbPath, messages));
+    assert.equal(rows.length, 2);
+    const providers = rows.map((r) => r.data.providerID).sort();
+    assert.deepEqual(providers, ["builtin:bigmodel-coding-plan", "builtin:zai-start-plan"]);
+    // No anthropic/openai turn survives the native filter.
+    assert.ok(!rows.some((r) => /anthropic|openai/.test(r.data.providerID)));
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("parseOpencodeDbIncremental aggregates ZCode GLM rows into source=zcode buckets (idempotent)", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-zcode-parse-"));
+  try {
+    const dbPath = path.join(tmp, "db.sqlite");
+    await fs.writeFile(dbPath, "", "utf8");
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1, files: {}, updatedAt: null };
+
+    const messages = [
+      {
+        ...buildOpencodeMessage({
+          modelID: "GLM-5.2",
+          created: "2026-06-15T09:00:00.000Z",
+          completed: "2026-06-15T09:00:12.000Z",
+          tokens: { input: 10478, output: 203, reasoning: 0, cached: 7040, cacheWrite: 0 },
+        }),
+        id: "z1",
+        sessionID: "s1",
+        providerID: "builtin:zai-start-plan",
+      },
+    ];
+
+    const dbMessages = readZcodeDbMessages(dbPath, fakeZcodeSqliteOptions(dbPath, messages));
+    const res = await parseOpencodeDbIncremental({
+      dbMessages,
+      cursors,
+      queuePath,
+      source: "zcode",
+      cursorKey: "zcode",
+    });
+    assert.equal(res.bucketsQueued, 1);
+
+    const queued = await readJsonLines(queuePath);
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].source, "zcode");
+    // Model is stored with the DB's original case ("GLM-5.2"); the pricing
+    // matcher is case-insensitive so cost still resolves to the curated key.
+    assert.equal(queued[0].model, "GLM-5.2");
+    assert.equal(queued[0].input_tokens, 10478);
+    assert.equal(queued[0].output_tokens, 203);
+    assert.equal(queued[0].cached_input_tokens, 7040);
+
+    // Second run over the same DB must be a no-op (cursor dedup).
+    const dbMessages2 = readZcodeDbMessages(dbPath, fakeZcodeSqliteOptions(dbPath, messages));
+    const resAgain = await parseOpencodeDbIncremental({
+      dbMessages: dbMessages2,
+      cursors,
+      queuePath,
+      source: "zcode",
+      cursorKey: "zcode",
+    });
+    assert.equal(resAgain.bucketsQueued, 0);
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }

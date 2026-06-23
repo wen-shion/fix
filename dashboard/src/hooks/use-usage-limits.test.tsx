@@ -39,6 +39,7 @@ const existingLimits = {
   kiro: { configured: false },
   grok: { configured: false },
   antigravity: { configured: false },
+  zcode: { configured: false },
 };
 
 const freshLimits = {

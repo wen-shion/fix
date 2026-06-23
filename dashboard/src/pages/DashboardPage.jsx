@@ -50,6 +50,32 @@ const PERIODS = ["day", "week", "month", "total", "custom"];
 const DETAILS_DATE_KEYS = new Set(["day", "hour", "month"]);
 const DETAILS_PAGED_PERIODS = new Set(["day", "total", "custom"]);
 
+const SUMMARY_FORMAT_STORAGE_KEY = "tt.summaryFormat";
+
+// Persisted "compact (K/M/B) vs full" preference for the hero total, toggled by
+// clicking the big number. Returns null when no explicit choice is stored yet,
+// so the caller can fall back to a screen-width default.
+function readSummaryFormatPref() {
+  if (typeof window === "undefined") return null;
+  try {
+    const stored = window.localStorage?.getItem(SUMMARY_FORMAT_STORAGE_KEY);
+    if (stored === "compact") return true;
+    if (stored === "full") return false;
+    return null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function writeSummaryFormatPref(compact) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage?.setItem(SUMMARY_FORMAT_STORAGE_KEY, compact ? "compact" : "full");
+  } catch (_e) {
+    // localStorage may be unavailable (private mode, disabled). Non-fatal.
+  }
+}
+
 function hasUsageValue(value, level) {
   if (typeof level === "number" && level > 0) return true;
   if (typeof value === "bigint") return value > 0n;
@@ -132,9 +158,18 @@ export function DashboardPage({
   const [linkCodeRefreshToken, setLinkCodeRefreshToken] = useState(0);
   const [userStatus, setUserStatus] = useState(null);
   const [compactSummary, setCompactSummary] = useState(() => {
+    const stored = readSummaryFormatPref();
+    if (stored != null) return stored;
     if (typeof window === "undefined" || !window.matchMedia) return false;
     return window.matchMedia("(max-width: 640px)").matches;
   });
+  const toggleSummaryFormat = useCallback(() => {
+    setCompactSummary((prev) => {
+      const next = !prev;
+      writeSummaryFormatPref(next);
+      return next;
+    });
+  }, []);
   const screenshotMode = useMemo(() => {
     if (typeof window === "undefined") return false;
     return isScreenshotModeEnabled(window.location.search);
@@ -952,8 +987,7 @@ export function DashboardPage({
   const millionSuffix = copy("shared.unit.million_abbrev");
   const billionSuffix = copy("shared.unit.billion_abbrev");
   const summaryNumber = toFiniteNumber(summaryTotalTokens);
-  const useCompactSummary =
-    compactSummary && summaryNumber != null && Math.abs(summaryNumber) >= 1000000000;
+  const useCompactSummary = compactSummary && summaryNumber != null;
   const summaryValue = useMemo(() => {
     if (!useCompactSummary) return toDisplayNumber(summaryTotalTokens);
     return formatCompactNumber(summaryNumber, {
@@ -1332,6 +1366,10 @@ export function DashboardPage({
       metricsRows={metricsRows}
       summaryLabel={summaryLabel}
       summaryValue={summaryValue}
+      summaryFullValue={displayTotalTokens}
+      onToggleSummaryFormat={
+        !screenshotMode && summaryNumber != null ? toggleSummaryFormat : null
+      }
       summaryTotalTokensRaw={toFiniteNumber(summaryTotalTokens) || 0}
       summaryCostValue={summaryCostValue}
       summaryConversationsValue={summaryConversationsValue}

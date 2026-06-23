@@ -56,4 +56,53 @@ describe("UsageOverview", () => {
       referenceTotalTokens: 123,
     });
   });
+
+  it("toggles the summary number format when the hero total is clicked", async () => {
+    const user = userEvent.setup();
+    const onToggle = vi.fn();
+
+    render(
+      <UsageOverview
+        period="month"
+        periods={[]}
+        summaryLabel="Total"
+        summaryValue="1.23B"
+        summaryFullValue="1,234,567,890"
+        onToggleSummaryFormat={onToggle}
+        fleetData={[]}
+        from="2026-05-01"
+        to="2026-05-31"
+      />,
+    );
+
+    const toggle = screen.getByRole("button", { name: /toggle compact number format/i });
+    expect(toggle).toHaveAttribute("title", "1,234,567,890");
+    // The compact value renders intact (incl. its unit-letter suffix), not
+    // truncated.
+    expect(toggle).toHaveTextContent("1.23B");
+
+    await act(async () => {
+      await user.click(toggle);
+    });
+
+    expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders the hero total as plain text when no toggle handler is provided", () => {
+    render(
+      <UsageOverview
+        period="month"
+        periods={[]}
+        summaryLabel="Total"
+        summaryValue="1,234,567,890"
+        fleetData={[]}
+        from="2026-05-01"
+        to="2026-05-31"
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: /toggle compact number format/i }),
+    ).toBeNull();
+  });
 });

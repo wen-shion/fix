@@ -30,6 +30,8 @@ enum MenuBarDisplayMetric: String, CaseIterable {
     case antigravityClaude
     case antigravityGPro
     case antigravityFlash
+    case zcodeGlm52
+    case zcodeGlm5Turbo
 
     var menuLabel: String {
         switch self {
@@ -62,6 +64,8 @@ enum MenuBarDisplayMetric: String, CaseIterable {
         case .antigravityClaude: return "Ag Cl"
         case .antigravityGPro: return "Ag GPro"
         case .antigravityFlash: return "Ag Fl"
+        case .zcodeGlm52: return "ZC 5.2"
+        case .zcodeGlm5Turbo: return "ZC Turbo"
         }
     }
 
@@ -96,6 +100,8 @@ enum MenuBarDisplayMetric: String, CaseIterable {
         case .antigravityClaude: return "Antigravity Claude Limit"
         case .antigravityGPro: return "Antigravity Gemini Pro Limit"
         case .antigravityFlash: return "Antigravity Flash Limit"
+        case .zcodeGlm52: return "ZCode GLM-5.2 Limit"
+        case .zcodeGlm5Turbo: return "ZCode GLM-5-Turbo Limit"
         }
     }
 
@@ -112,7 +118,8 @@ enum MenuBarDisplayMetric: String, CaseIterable {
              .kiroMonth, .kiroBonus,
              .grokMonth, .grokOndemand,
              .copilotPremium, .copilotChat,
-             .antigravityClaude, .antigravityGPro, .antigravityFlash:
+             .antigravityClaude, .antigravityGPro, .antigravityFlash,
+             .zcodeGlm52, .zcodeGlm5Turbo:
             return "limits"
         }
     }
@@ -133,6 +140,7 @@ enum MenuBarDisplayMetric: String, CaseIterable {
         case .grokMonth, .grokOndemand: return "grok"
         case .copilotPremium, .copilotChat: return "copilot"
         case .antigravityClaude, .antigravityGPro, .antigravityFlash: return "antigravity"
+        case .zcodeGlm52, .zcodeGlm5Turbo: return "zcode"
         }
     }
 }
@@ -151,6 +159,7 @@ private extension UsageLimitsResponse {
         case "grok": return (grok?.configured == true) && (grok?.error == nil)
         case "copilot": return (copilot?.configured == true) && (copilot?.error == nil)
         case "antigravity": return antigravity.configured && antigravity.error == nil
+        case "zcode": return (zcode?.configured == true) && (zcode?.error == nil)
         default: return false
         }
     }
@@ -183,6 +192,8 @@ private extension UsageLimitsResponse {
         case .antigravityClaude: return antigravity.primaryWindow != nil
         case .antigravityGPro: return antigravity.secondaryWindow != nil
         case .antigravityFlash: return antigravity.tertiaryWindow != nil
+        case .zcodeGlm52: return zcode?.primaryWindow != nil
+        case .zcodeGlm5Turbo: return zcode?.secondaryWindow != nil
         }
     }
 }

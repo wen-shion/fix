@@ -57,6 +57,7 @@ const PROVIDER_COLORS = {
   "KILO-CODE": "#facc15",
   MIMO: "#ff6900",         // Xiaomi MiMo brand orange
   DROID: "#ef4444",        // red-500 (Factory brand)
+  ZCODE: "#14b8a6",        // teal-500 (Z.ai / GLM — distinct from the blues)
 };
 
 function getProviderColor(label, index) {
@@ -119,6 +120,8 @@ export function UsageOverview({
   periods,
   onPeriodChange,
   summaryValue,
+  summaryFullValue,
+  onToggleSummaryFormat,
   summaryLabel,
   summaryCostValue,
   onCostInfo,
@@ -170,6 +173,25 @@ export function UsageOverview({
   const isDark = resolvedTheme === "dark";
   const gradientFrom = isDark ? "rgba(10,10,10,0.98)" : "rgba(255,255,255,0.96)";
   const gradientTo = isDark ? "rgba(10,10,10,0)" : "rgba(255,255,255,0)";
+
+  const summaryContent = showAnimatedSummary ? (
+    <Counter
+      value={summaryCounterValue}
+      displayValue={summaryValue}
+      fontSize={72}
+      padding={6}
+      gap={1}
+      textColor="var(--oai-black, #111827)"
+      fontWeight={700}
+      gradientHeight={isDark ? 0 : 8}
+      gradientFrom={gradientFrom}
+      gradientTo={gradientTo}
+      counterStyle={{ paddingLeft: 0, paddingRight: 0, gap: 0 }}
+      digitStyle={{ width: "0.88ch" }}
+    />
+  ) : (
+    summaryValue
+  );
 
   // FleetData is already grouped by provider
   const providers = fleetData.filter((f) => f.models?.length > 0);
@@ -266,23 +288,18 @@ export function UsageOverview({
         <div className="text-center mb-8">
           <div className="text-xs text-oai-gray-500 dark:text-oai-gray-300 uppercase tracking-wider mb-3">{summaryLabel}</div>
           <div className="text-5xl sm:text-6xl md:text-7xl font-bold text-oai-black dark:text-oai-white tracking-tight tabular-nums">
-            {showAnimatedSummary ? (
-              <Counter
-                value={summaryCounterValue}
-                displayValue={summaryValue}
-                fontSize={72}
-                padding={6}
-                gap={1}
-                textColor="var(--oai-black, #111827)"
-                fontWeight={700}
-                gradientHeight={isDark ? 0 : 8}
-                gradientFrom={gradientFrom}
-                gradientTo={gradientTo}
-                counterStyle={{ paddingLeft: 0, paddingRight: 0, gap: 0 }}
-                digitStyle={{ width: "0.88ch" }}
-              />
+            {onToggleSummaryFormat ? (
+              <button
+                type="button"
+                onClick={onToggleSummaryFormat}
+                title={summaryFullValue || undefined}
+                aria-label={copy("usage.summary.toggle_aria")}
+                className="cursor-pointer rounded-lg leading-none transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-oai-brand"
+              >
+                {summaryContent}
+              </button>
             ) : (
-              summaryValue
+              summaryContent
             )}
           </div>
           {summaryCostValue && (

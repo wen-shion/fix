@@ -244,6 +244,11 @@ async function cmdStatus(argv = []) {
   const mimoDbPath = path.join(mimoHome, "mimocode.db");
   const mimoInstalled = fssync.existsSync(mimoDbPath);
 
+  // ZCode (Z.ai's coding agent — OpenCode-fork SQLite) — passive scan of db.sqlite.
+  const zcodeHome = process.env.ZCODE_HOME || path.join(home, ".zcode");
+  const zcodeDbPath = path.join(zcodeHome, "cli", "db", "db.sqlite");
+  const zcodeInstalled = fssync.existsSync(zcodeDbPath);
+
   // Kilo Code VS Code extension — passive scan of all VS Code-family
   // globalStorage/kilocode.kilo-code/tasks/ ui_messages.json files.
   const kilocodeTaskFiles = resolveKilocodeTaskFiles(process.env);
@@ -365,6 +370,9 @@ async function cmdStatus(argv = []) {
         mimo: mimoInstalled
           ? { installed: true, detail: mimoDbPath }
           : { installed: false },
+        zcode: zcodeInstalled
+          ? { installed: true, detail: zcodeDbPath }
+          : { installed: false },
         kilocode: kilocodeInstalled
           ? { installed: true, files: kilocodeTaskFiles.length }
           : { installed: false },
@@ -455,6 +463,9 @@ async function cmdStatus(argv = []) {
         : null,
       mimoInstalled
         ? `- Mimo: passive reader (${mimoDbPath})`
+        : null,
+      zcodeInstalled
+        ? `- ZCode: passive reader (${zcodeDbPath})`
         : null,
       kilocodeInstalled
         ? `- Kilo Code (VS Code extension): passive reader (${kilocodeTaskFiles.length} task${kilocodeTaskFiles.length !== 1 ? "s" : ""} across ${new Set(kilocodeTaskFiles.map((t) => t.ide)).size} IDE${new Set(kilocodeTaskFiles.map((t) => t.ide)).size !== 1 ? "s" : ""})`

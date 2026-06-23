@@ -23,4 +23,5 @@ export const AGENT_LOGOS = [
   { id: 18, name: "Droid", provider: "droid" },
   { id: 19, name: "GitHub", provider: "github" },
   { id: 21, name: "Mimo", provider: "mimo" },
+  { id: 22, name: "ZCode", provider: "zcode" },
 ];

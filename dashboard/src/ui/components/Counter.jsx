@@ -92,11 +92,23 @@ export function getCounterPlaces(displayValue) {
 function Digit({ place, value, height, digitStyle, shouldReduceMotion }) {
   if (typeof place !== "number") {
     const staticTokenStyle = getStaticTokenStyle(place, height);
+    // Letter tokens (unit suffixes like K/M/B) are wider than a digit cell, so
+    // a fixed digit-width (from digitStyle) clips them against the row's
+    // overflow:hidden. Let the glyph size itself; "." and "," keep their tuned
+    // widths.
+    const isLetterToken = place !== "." && place !== ",";
     return (
       <span
         data-counter-token="static"
         className="relative inline-flex items-center justify-center"
-        style={{ height, ...staticTokenStyle, ...digitStyle }}
+        style={{
+          height,
+          ...staticTokenStyle,
+          ...digitStyle,
+          ...(isLetterToken
+            ? { width: "auto", paddingInline: "0.06ch", justifyContent: "center" }
+            : null),
+        }}
       >
         {place}
       </span>

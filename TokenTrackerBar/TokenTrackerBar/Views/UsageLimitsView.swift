@@ -99,6 +99,10 @@ struct UsageLimitsView: View {
                 if let copilot = limits.copilot, copilot.configured, copilot.error == nil {
                     groups.append(AnyView(toolSection(id: id, title: planTitle("GitHub Copilot", copilot.planLabel), assetName: "CopilotLogo", toolName: "GitHub Copilot", specs: copilotSpecs(copilot))))
                 }
+            case "zcode":
+                if let zcode = limits.zcode, zcode.configured, zcode.error == nil {
+                    groups.append(AnyView(toolSection(id: id, title: planTitle("ZCode", zcode.planLabel), assetName: "ZcodeLogo", toolName: "ZCode", specs: zcodeSpecs(zcode))))
+                }
             default:
                 break
             }
@@ -247,6 +251,13 @@ struct UsageLimitsView: View {
         var s: [LimitWindowSpec] = []
         if let w = g.primaryWindow { s.append(makeSpec(Strings.grokMonthLabel, w.usedPercent, iso: w.resetAt)) }
         if let w = g.secondaryWindow { s.append(makeSpec(Strings.grokOndemandLabel, w.usedPercent, iso: w.resetAt)) }
+        return s
+    }
+
+    private func zcodeSpecs(_ z: ZcodeLimits) -> [LimitWindowSpec] {
+        var s: [LimitWindowSpec] = []
+        if let w = z.primaryWindow { s.append(makeSpec("GLM-5.2", w.usedPercent, iso: w.resetAt)) }
+        if let w = z.secondaryWindow { s.append(makeSpec("GLM-5-Turbo", w.usedPercent, iso: w.resetAt)) }
         return s
     }
 
@@ -457,13 +468,14 @@ struct UsageLimitsView: View {
     @ViewBuilder
     private func brandIcon(_ name: String) -> some View {
         switch name {
-        case "CursorLogo", "KimiLogo", "KiroLogo", "GrokLogo", "CopilotLogo":
+        case "CursorLogo", "KimiLogo", "KiroLogo", "GrokLogo", "CopilotLogo", "ZcodeLogo":
             let filename: String = {
                 switch name {
                 case "CursorLogo": return "cursor.svg"
                 case "KimiLogo": return "kimi.svg"
                 case "KiroLogo": return "kiro.svg"
                 case "GrokLogo": return "grok.svg"
+                case "ZcodeLogo": return "zcode.svg"
                 default: return "copilot.svg"
                 }
             }()

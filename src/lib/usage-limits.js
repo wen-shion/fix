@@ -24,6 +24,7 @@ const {
   fetchCursorUsageSummary,
 } = require("./cursor-config");
 const { fetchGrokLimits } = require("./grok-limits");
+const { fetchZcodeLimits } = require("./zcode-limits");
 const { readSqliteJsonRows } = require("./sqlite-reader");
 
 // 2-minute in-memory cache
@@ -2289,7 +2290,7 @@ async function fetchUsageLimitsUncached({
   const freshClaudeCache = claudeToken ? readFreshClaudeLimitsCache({ home, nowMs }) : null;
 
   const providerFetch = withFetchTimeout(fetchImpl, providerTimeoutMs);
-  const [claudeResult, codexResult, cursor, kimi, gemini, kiro, antigravity, copilot, grok] = await Promise.all([
+  const [claudeResult, codexResult, cursor, kimi, gemini, kiro, antigravity, copilot, grok, zcode] = await Promise.all([
     claudeToken && !freshClaudeCache && !claudeRetryAtMs
       ? withProviderTimeout(fetchClaudeUsageLimits(claudeToken, { fetchImpl: providerFetch, maxAttempts: 1 }), "Claude", providerTimeoutMs).then(
           (value) => ({ status: "fulfilled", value }),
@@ -2317,6 +2318,8 @@ async function fetchUsageLimitsUncached({
     withProviderTimeout(fetchCopilotLimits({ home, env, fetchImpl: providerFetch, platform, securityRunner }), "GitHub Copilot", providerTimeoutMs)
       .catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
     withProviderTimeout(fetchGrokLimits({ home, env, fetchImpl: providerFetch }), "Grok Build", providerTimeoutMs)
+      .catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
+    withProviderTimeout(fetchZcodeLimits({ home, env, fetchImpl: providerFetch }), "ZCode", providerTimeoutMs)
       .catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
   ]);
 
@@ -2399,6 +2402,7 @@ async function fetchUsageLimitsUncached({
     antigravity: withPlanLabel(antigravity, antigravity.account_plan, "Antigravity"),
     copilot: withPlanLabel(copilot, copilot.plan_name, "Copilot"),
     grok: withPlanLabel(grok, null, "Grok"),
+    zcode: withPlanLabel(zcode, zcode.plan_label, "ZCode"),
   };
 
   cache = { data, fetchedAt: nowMs };
@@ -2430,4 +2434,5 @@ module.exports = {
   decryptCopilotAuthDbToken,
   describeCopilotOtelStatus,
   fetchGrokLimits,
+  fetchZcodeLimits,
 };

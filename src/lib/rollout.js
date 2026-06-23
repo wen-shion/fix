@@ -2550,6 +2550,36 @@ function readMimoDbMessages(dbPath, sqliteOptions = {}) {
   return all.filter((m) => isMimoNativeMessage(m.data));
 }
 
+// ZCode is Z.ai's (Zhipu) coding agent — another OpenCode-fork that stores
+// assistant messages in the identical `message` table schema
+// (~/.zcode/cli/db/db.sqlite). Its own agent runs GLM models through Z.ai /
+// BigModel endpoints, tagged with a providerID like "builtin:zai-start-plan",
+// "builtin:zai-coding-plan", or "builtin:bigmodel-coding-plan". ZCode can ALSO
+// orchestrate bundled claude-code / codex / gemini-cli sub-agents; those turns
+// carry providerID "anthropic"/"openai"/"google" and are already counted by the
+// standalone Claude/Codex/Gemini parsers. Keep ONLY ZCode-native (Z.ai /
+// BigModel / Zhipu) rows so we never double-count. Key off providerID, NEVER the
+// model id — a GLM model the user ran *inside* Claude Code is source=claude, so
+// matching "glm" on the model would re-count it. Mirrors the Mimo discipline.
+function isZcodeNativeMessage(data) {
+  if (!data) return false;
+  const provider = String(data.providerID || "").toLowerCase();
+  return (
+    provider.includes("zai") ||
+    provider.includes("bigmodel") ||
+    provider.includes("zcode") ||
+    provider.includes("zhipu")
+  );
+}
+
+// Read only genuine ZCode assistant messages (its own GLM models via Z.ai /
+// BigModel), dropping any bundled sub-agent turns. See isZcodeNativeMessage.
+function readZcodeDbMessages(dbPath, sqliteOptions = {}) {
+  if (!dbPath || !fssync.existsSync(dbPath)) return [];
+  const all = readOpencodeDbMessages(dbPath, sqliteOptions);
+  return all.filter((m) => isZcodeNativeMessage(m.data));
+}
+
 async function parseOpencodeDbIncremental({
   dbMessages,
   cursors,
@@ -9064,6 +9094,7 @@ module.exports = {
   listOpencodeMessageFiles,
   readOpencodeDbMessages,
   readMimoDbMessages,
+  readZcodeDbMessages,
   resolveKiroDbPath,
   resolveKiroJsonlPath,
   resolveHermesPath,

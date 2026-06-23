@@ -329,6 +329,10 @@ final class StatusBarController: NSObject {
                 return genericLimitValue(id: id, metric: metric, configured: viewModel.usageLimits?.antigravity.configured, error: viewModel.usageLimits?.antigravity.error, window: viewModel.usageLimits?.antigravity.secondaryWindow)
             case .antigravityFlash:
                 return genericLimitValue(id: id, metric: metric, configured: viewModel.usageLimits?.antigravity.configured, error: viewModel.usageLimits?.antigravity.error, window: viewModel.usageLimits?.antigravity.tertiaryWindow)
+            case .zcodeGlm52:
+                return genericLimitValue(id: id, metric: metric, configured: viewModel.usageLimits?.zcode?.configured, error: viewModel.usageLimits?.zcode?.error, window: viewModel.usageLimits?.zcode?.primaryWindow)
+            case .zcodeGlm5Turbo:
+                return genericLimitValue(id: id, metric: metric, configured: viewModel.usageLimits?.zcode?.configured, error: viewModel.usageLimits?.zcode?.error, window: viewModel.usageLimits?.zcode?.secondaryWindow)
             }
         }
     }

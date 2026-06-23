@@ -11,6 +11,7 @@ export const LIMIT_PROVIDER_IDS = [
   "grok",
   "copilot",
   "antigravity",
+  "zcode",
 ];
 
 /** Keys for ProviderIcon — mono logos use inline SVG; colored logos use /brand-logos/. */
@@ -24,6 +25,7 @@ export const LIMIT_PROVIDER_ICON_KEYS = {
   grok: "GROK",
   copilot: "COPILOT",
   antigravity: "ANTIGRAVITY",
+  zcode: "ZCODE",
 };
 
 export function limitProviderIconKey(id) {
@@ -50,6 +52,8 @@ export function limitProviderName(id) {
       return copy("limits.provider.copilot");
     case "antigravity":
       return copy("limits.provider.antigravity");
+    case "zcode":
+      return copy("limits.provider.zcode");
     default:
       return String(id || "");
   }

@@ -76,6 +76,7 @@ export function LimitsPage() {
                 grok={usageLimits?.grok}
                 antigravity={usageLimits?.antigravity}
                 copilot={usageLimits?.copilot}
+                zcode={usageLimits?.zcode}
                 order={prefs.order}
                 visibility={prefs.visibility}
                 displayMode={prefs.displayMode}

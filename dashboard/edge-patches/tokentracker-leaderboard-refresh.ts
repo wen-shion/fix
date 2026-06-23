@@ -99,6 +99,7 @@ const MODEL_PRICING: Record<string, { input: number; output: number; cache_read:
   //    matcher requires the user-supplied model name to CONTAIN the LiteLLM
   //    key, so the bare `glm-5.1` / `glm-4.6` strings reported by Claude
   //    Code-compatible GLM endpoints never match. Curate them here. ──
+  "glm-5.2": { input: 1.4, output: 4.4, cache_read: 0.26 },
   "glm-5.1": { input: 1.4, output: 4.4, cache_read: 0.26 },
   "glm-5": { input: 1.0, output: 3.2, cache_read: 0.2 },
   "glm-5-turbo": { input: 1.2, output: 4.0, cache_read: 0.24 },
@@ -217,6 +218,7 @@ function getModelPricing(model: string) {
   if (lower.includes("glm-4.7")) return MODEL_PRICING["glm-4.7"];
   if (lower.includes("glm-4.6")) return MODEL_PRICING["glm-4.6"];
   if (lower.includes("glm-5-turbo")) return MODEL_PRICING["glm-5-turbo"];
+  if (lower.includes("glm-5.2")) return MODEL_PRICING["glm-5.2"];
   if (lower.includes("glm-5.1")) return MODEL_PRICING["glm-5.1"];
   if (lower.includes("glm-5")) return MODEL_PRICING["glm-5"];
   if (lower.includes("kiro")) return MODEL_PRICING["kiro-cli-agent"];

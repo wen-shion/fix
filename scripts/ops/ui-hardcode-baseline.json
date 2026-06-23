@@ -318,7 +318,7 @@
       ]
     },
     "dashboard/src/ui/dashboard/components/UsageOverview.jsx": {
-      "colors": 11,
+      "colors": 13,
       "rawText": 2,
       "rawTextTokens": [
         "0 && (",

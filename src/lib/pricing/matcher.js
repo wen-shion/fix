@@ -81,10 +81,18 @@ function normalizeZedModel(model) {
 
 // Claude desktop/CLI sometimes reports display-style names such as
 // `claude-opus-4.8` or `Claude Opus 4.8`, while curated keys use Anthropic's
-// historical dash style (`claude-opus-4-8`).
+// historical dash style (`claude-opus-4-8`). Relay/gateway backends (OpenRouter
+// and API proxies) add a provider path prefix and may invert tier/version order
+// — e.g. `anthropic/claude-4.6-opus-20260205` — which previously rendered $0
+// because the prefix slash got flattened to a dash and the order never matched.
 function normalizeClaudeModel(model) {
   if (!model || typeof model !== "string") return model;
-  let m = model
+  // Drop the provider path prefix relays prepend ("anthropic/...",
+  // "openrouter/anthropic/...") so only the bare Claude id reaches the cleanup
+  // and lookups below. Without this the "/" is flattened to "-" by the regex
+  // step, breaking both the exact and provider-prefix-strip matches.
+  const base = model.includes("/") ? model.slice(model.lastIndexOf("/") + 1) : model;
+  let m = base
     .trim()
     .replace(/\([^)]*\)/g, " ")
     .toLowerCase()
@@ -99,6 +107,13 @@ function normalizeClaudeModel(model) {
     return m
       .replace(/^(sonnet|opus|haiku)-/, "claude-$1-")
       .replace(/^(claude-(?:sonnet|opus|haiku)-\d+)\.(\d+)/, "$1-$2");
+  }
+  // Some relays invert tier/version order (`claude-4.6-opus` instead of the
+  // canonical `claude-opus-4-6`). Restore it ONLY for major>=4 — Claude 3.x is
+  // genuinely version-first (`claude-3-5-sonnet`, `claude-3-opus`) and must stay
+  // untouched.
+  if (/^claude-(?:[4-9]|\d{2,})[.-]\d+-(?:sonnet|opus|haiku)/.test(m)) {
+    return m.replace(/^claude-(\d+)[.-](\d+)-(sonnet|opus|haiku)/, "claude-$3-$1-$2");
   }
 
   return m;

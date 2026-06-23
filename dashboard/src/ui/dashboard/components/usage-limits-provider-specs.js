@@ -85,6 +85,14 @@ export const PROVIDER_LIMIT_SPECS = {
       ];
     },
   },
+  zcode: {
+    windows(data) {
+      return [
+        { key: "glm52", labelKey: "limits.label.zcode_glm52", window: data.primary_window },
+        { key: "glm5t", labelKey: "limits.label.zcode_glm5t", window: data.secondary_window },
+      ];
+    },
+  },
 };
 
 /** Static copy() anchors for validate:copy — labels resolve at runtime via spec.labelKey. */
@@ -116,5 +124,7 @@ export function usageLimitsLabelCopyAnchor() {
     copy("limits.label.antigravity_flash"),
     copy("limits.label.copilot_premium"),
     copy("limits.label.copilot_chat"),
+    copy("limits.label.zcode_glm52"),
+    copy("limits.label.zcode_glm5t"),
   ];
 }

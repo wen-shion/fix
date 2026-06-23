@@ -115,6 +115,7 @@ const SUPPORTED_PROVIDERS = [
   "Zed Agent",
   "Goose",
   "Mimo",
+  "ZCode",
 ];
 
 async function cmdInit(argv) {

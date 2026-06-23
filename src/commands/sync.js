@@ -15,6 +15,7 @@ const {
   listOpencodeMessageFiles,
   readOpencodeDbMessages,
   readMimoDbMessages,
+  readZcodeDbMessages,
   resolveKiroDbPath,
   resolveKiroJsonlPath,
   resolveHermesPath,
@@ -215,6 +216,7 @@ async function cmdSync(argv) {
     const opencodeStorageDir = path.join(opencodeHome, "storage");
     const kiloHome = process.env.KILO_HOME || path.join(xdgDataHome, "kilo");
     const mimoHome = process.env.MIMO_HOME || path.join(xdgDataHome, "mimocode");
+    const zcodeHome = process.env.ZCODE_HOME || path.join(home, ".zcode");
 
     // OpenClaw hook integration: allow a hook to request incremental parsing for a single session jsonl.
     // We still parse all regular sources so model/source attribution stays complete (e.g. Kimi sessions).
@@ -558,6 +560,47 @@ async function cmdSync(argv) {
         });
       } catch (err) {
         warnProviderParseFailure("Mimo", err, opts);
+      }
+    }
+
+    // ── ZCode (Z.ai's coding agent — OpenCode-fork SQLite) ──
+    // Z.ai's ZCode CLI is an OpenCode fork that stores assistant messages in the
+    // exact same `message` table schema (~/.zcode/cli/db/db.sqlite). Reuse the
+    // OpenCode parser with a dedicated cursor namespace so the message indexes
+    // don't collide. readZcodeDbMessages returns ONLY ZCode's own GLM rows
+    // (providerID zai/bigmodel/zhipu) — ZCode can orchestrate bundled
+    // claude-code/codex/gemini-cli sub-agents whose turns (anthropic/openai/
+    // google) are already counted by the standalone parsers, so anything else
+    // would double-count.
+    const zcodeDbPath = path.join(zcodeHome, "cli", "db", "db.sqlite");
+    let zcodeResult = { messagesProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+    const zcodeDbMessages = readZcodeDbMessages(zcodeDbPath);
+    if (zcodeDbMessages.length > 0) {
+      if (progress?.enabled) {
+        progress.start(
+          `Parsing ZCode ${renderBar(0)} 0/${formatNumber(zcodeDbMessages.length)} msgs | buckets 0`,
+        );
+      }
+      try {
+        zcodeResult = await parseOpencodeDbIncremental({
+          dbMessages: zcodeDbMessages,
+          cursors,
+          queuePath,
+          projectQueuePath,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing ZCode ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(
+                p.total,
+              )} msgs | buckets ${formatNumber(p.bucketsQueued)}`,
+            );
+          },
+          source: "zcode",
+          cursorKey: "zcode",
+        });
+      } catch (err) {
+        warnProviderParseFailure("ZCode", err, opts);
       }
     }
 
@@ -1254,6 +1297,7 @@ async function cmdSync(argv) {
         copilotResult.recordsProcessed +
         kiloResult.messagesProcessed +
         mimoResult.messagesProcessed +
+        zcodeResult.messagesProcessed +
         kilocodeResult.recordsProcessed +
         roocodeResult.recordsProcessed +
         zedResult.recordsProcessed +
@@ -1281,6 +1325,7 @@ async function cmdSync(argv) {
         copilotResult.bucketsQueued +
         kiloResult.bucketsQueued +
         mimoResult.bucketsQueued +
+        zcodeResult.bucketsQueued +
         kilocodeResult.bucketsQueued +
         roocodeResult.bucketsQueued +
         zedResult.bucketsQueued +

@@ -194,8 +194,20 @@ function DroidIcon({ size = 16, className = "" }) {
   );
 }
 
+// ZCode is Z.ai's coding agent — use the official Z.ai logomark (three diagonal
+// slashes forming a "Z"). Mono / currentColor, so it renders through the inline
+// component path. Source: @lobehub/icons "zai".
+function ZcodeIcon({ size = 16, className = "" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" fillRule="evenodd" className={className}>
+      <path d="M12.105 2L9.927 4.953H.653L2.83 2h9.276zM23.254 19.048L21.078 22h-9.242l2.174-2.952h9.244zM24 2L9.264 22H0L14.736 2H24z" />
+    </svg>
+  );
+}
+
 const PROVIDER_ICON_MAP = {
   CLAUDE: ClaudeIcon,
+  ZCODE: ZcodeIcon,
   CODEBUDDY: CodeBuddyIcon,
   // WorkBuddy ships the same Tencent "buddy" mascot mark as CodeBuddy.
   WORKBUDDY: CodeBuddyIcon,

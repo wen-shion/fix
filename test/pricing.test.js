@@ -328,6 +328,29 @@ test("matcher: Claude normalization maps dotted display names to curated keys", 
   assert.equal(matcher.normalizeClaudeModel("4.6"), "4.6");
 });
 
+test("matcher: Claude normalization handles relay/gateway ids (#212)", () => {
+  // Provider path prefix is stripped; standard OpenRouter order is preserved.
+  assert.equal(matcher.normalizeClaudeModel("anthropic/claude-opus-4.6"), "claude-opus-4-6");
+  assert.equal(
+    matcher.normalizeClaudeModel("openrouter/anthropic/claude-opus-4.6"),
+    "claude-opus-4-6",
+  );
+  // Inverted tier/version order from relays (the #212 model name), with date.
+  assert.equal(
+    matcher.normalizeClaudeModel("anthropic/claude-4.6-opus-20260205"),
+    "claude-opus-4-6-20260205",
+  );
+  assert.equal(matcher.normalizeClaudeModel("claude-4-6-opus"), "claude-opus-4-6");
+  assert.equal(matcher.normalizeClaudeModel("anthropic/claude-4.6-sonnet"), "claude-sonnet-4-6");
+  // Claude 3.x is genuinely version-first and must NOT be reordered.
+  assert.equal(
+    matcher.normalizeClaudeModel("claude-3-5-sonnet-20241022"),
+    "claude-3-5-sonnet-20241022",
+  );
+  assert.equal(matcher.normalizeClaudeModel("claude-3-7-sonnet"), "claude-3-7-sonnet");
+  assert.equal(matcher.normalizeClaudeModel("claude-3-opus-20240229"), "claude-3-opus-20240229");
+});
+
 test("matcher: Zed normalization only applies to the zed source", () => {
   const litellm = { "claude-opus-4-8": { input: 5, output: 25 } };
   const curated = { exact: {}, alias: {}, fuzzy: [] };
@@ -477,6 +500,33 @@ test("index: getModelPricing resolves claude-fable-5 from CURATED (not yet in Li
     reasoning_output_tokens: 0,
   });
   assert.equal(cost, 10);
+});
+
+test("index: getModelPricing resolves GLM-5.2 from CURATED for ZCode rows", async () => {
+  pricing.resetPricingForTests();
+  const cachePath = tmpCachePath();
+  await pricing.ensurePricingLoaded({
+    cachePath,
+    fetchImpl: makeFetchImpl(FIXTURE_LITELLM),
+  });
+  // ZCode (Z.ai) reports its own GLM usage as model "GLM-5.2" (uppercase,
+  // dotted). It's absent from LiteLLM, so the curated exact key must win or the
+  // dashboard renders $0 cost. Z.ai list rates: $1.4 / $4.4 / $0.26 per 1M.
+  const glm = pricing.getModelPricing("GLM-5.2", { source: "zcode" });
+  assert.equal(glm.input, 1.4);
+  assert.equal(glm.output, 4.4);
+  assert.equal(glm.cache_read, 0.26);
+  // End-to-end: a ZCode row must produce non-zero cost.
+  const cost = pricing.computeRowCost({
+    source: "zcode",
+    model: "GLM-5.2",
+    input_tokens: 1_000_000,
+    output_tokens: 0,
+    cached_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+    reasoning_output_tokens: 0,
+  });
+  assert.equal(cost, 1.4);
 });
 
 test("index: getModelPricing resolves Claude Opus 4.8 aliases from CURATED", async () => {

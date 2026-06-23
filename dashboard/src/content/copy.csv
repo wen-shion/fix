@@ -132,6 +132,7 @@ dashboard.core_index.expand_label,dashboard,DashboardPage,UsagePanel,toggle,"▸
 dashboard.core_index.collapse_aria,dashboard,DashboardPage,UsagePanel,toggle_aria,"Collapse model breakdown",,active
 dashboard.core_index.expand_aria,dashboard,DashboardPage,UsagePanel,toggle_aria,"Expand model breakdown",,active
 usage.summary.total,ui,UsagePanel,UsagePanel,summary_label_total,"Total tokens",,active
+usage.summary.toggle_aria,ui,DashboardPage,UsageOverview,summary_toggle_aria,"Toggle compact number format",,active
 usage.metric.total,ui,UsagePanel,UsagePanel,metric_total,"Total",,active
 usage.metric.input,ui,UsagePanel,UsagePanel,metric_input,"Input",,active
 usage.metric.output,ui,UsagePanel,UsagePanel,metric_output,"Output",,active
@@ -567,6 +568,9 @@ limits.provider.kiro,ui,LimitsPage,UsageLimitsPanel,provider_kiro,"Kiro",,active
 limits.provider.grok,ui,LimitsPage,UsageLimitsPanel,provider_grok,"Grok Build",,active
 limits.provider.copilot,ui,LimitsPage,UsageLimitsPanel,provider_copilot,"GitHub Copilot",,active
 limits.provider.antigravity,ui,LimitsPage,UsageLimitsPanel,provider_antigravity,"Antigravity",,active
+limits.provider.zcode,ui,LimitsPage,UsageLimitsPanel,provider_zcode,"ZCode",,active
+limits.label.zcode_glm52,ui,LimitsPage,UsageLimitsPanel,zcode_glm52,"GLM-5.2",,active
+limits.label.zcode_glm5t,ui,LimitsPage,UsageLimitsPanel,zcode_glm5t,"GLM-5-Turbo",,active
 limits.label.claude_5h,ui,LimitsPage,UsageLimitsPanel,claude_5h,"5h",,active
 limits.label.claude_7d,ui,LimitsPage,UsageLimitsPanel,claude_7d,"7d",,active
 limits.label.claude_opus,ui,LimitsPage,UsageLimitsPanel,claude_opus,"Opus",,active

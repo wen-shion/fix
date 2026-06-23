@@ -131,6 +131,8 @@ export function DashboardView(props) {
     onCustomRangeOpenChange,
     summaryLabel,
     summaryValue,
+    summaryFullValue,
+    onToggleSummaryFormat,
     summaryTotalTokensRaw,
     summaryCostValue,
     summaryConversationsValue,
@@ -334,6 +336,8 @@ export function DashboardView(props) {
                     onPeriodChange={setSelectedPeriod}
                     summaryLabel={summaryLabel}
                     summaryValue={summaryValue}
+                    summaryFullValue={summaryFullValue}
+                    onToggleSummaryFormat={onToggleSummaryFormat}
                     summaryCostValue={summaryCostValue}
                     onCostInfo={costInfoEnabled ? openCostModal : null}
                     fleetData={fleetData}

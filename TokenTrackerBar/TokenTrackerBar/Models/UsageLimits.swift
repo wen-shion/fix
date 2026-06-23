@@ -11,10 +11,11 @@ struct UsageLimitsResponse: Codable, Equatable {
     let grok: GrokLimits?
     let antigravity: AntigravityLimits
     let copilot: CopilotLimits?
+    let zcode: ZcodeLimits?
 
     enum CodingKeys: String, CodingKey {
         case fetchedAt = "fetched_at"
-        case claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot
+        case claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot, zcode
     }
 }
 
@@ -256,6 +257,21 @@ struct CopilotLimits: Codable, Equatable {
     }
 }
 
+struct ZcodeLimits: Codable, Equatable {
+    let configured: Bool
+    let error: String?
+    let planLabel: String?
+    let primaryWindow: GenericLimitWindow?
+    let secondaryWindow: GenericLimitWindow?
+
+    enum CodingKeys: String, CodingKey {
+        case configured, error
+        case planLabel = "plan_label"
+        case primaryWindow = "primary_window"
+        case secondaryWindow = "secondary_window"
+    }
+}
+
 struct AntigravityLimits: Codable, Equatable {
     let configured: Bool
     let error: String?
@@ -293,6 +309,7 @@ extension UsageLimitsResponse {
             (grok?.configured ?? false, grok?.error),
             (antigravity.configured, antigravity.error),
             (copilot?.configured ?? false, copilot?.error),
+            (zcode?.configured ?? false, zcode?.error),
         ]
         return providers.contains { $0.0 && $0.1 == nil }
     }
