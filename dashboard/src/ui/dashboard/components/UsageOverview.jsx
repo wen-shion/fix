@@ -3,6 +3,7 @@ import { motion, useReducedMotion } from "motion/react";
 import { Info, Loader2, SquareArrowOutUpRight } from "lucide-react";
 import { Popover } from "@base-ui/react/popover";
 import { Card, Button, Counter } from "../../components";
+import { Select } from "../../components/Select.jsx";
 import { useTheme } from "../../../hooks/useTheme.js";
 import { useCurrency } from "../../../hooks/useCurrency.js";
 import { copy, getCopyLocale } from "../../../lib/copy";
@@ -137,6 +138,9 @@ export function UsageOverview({
   onOpenShare,
   from,
   to,
+  deviceOptions = [],
+  selectedDevice = "",
+  onDeviceChange,
 }) {
   const tabs = normalizePeriods(periods);
   const dateLocale = getDateFnsLocale(getCopyLocale());
@@ -267,6 +271,16 @@ export function UsageOverview({
             })}
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
+            {deviceOptions.length > 1 ? (
+              <Select
+                value={selectedDevice}
+                onValueChange={onDeviceChange}
+                options={deviceOptions}
+                ariaLabel={copy("dashboard.device_filter.aria")}
+                matchTriggerWidth
+                className="h-8 px-2.5 text-xs"
+              />
+            ) : null}
 {onOpenShare ? (
               <button
                 type="button"
