@@ -43,6 +43,8 @@ import {
 import { ActivityHeatmap } from "../ui/dashboard/components/ActivityHeatmap.jsx";
 import { ProjectUsagePanel } from "../ui/dashboard/components/ProjectUsagePanel.jsx";
 import { DashboardView } from "../ui/dashboard/views/DashboardView.jsx";
+import { useAccountDevices } from "../hooks/use-account-devices.js";
+import { DeviceUsageCard } from "../ui/dashboard/components/DeviceUsageCard.jsx";
 import { ShareModal } from "../ui/share/ShareModal";
 import { useShareCardData } from "../ui/share/use-share-card-data";
 
@@ -402,6 +404,50 @@ export function DashboardPage({
   }, [mockNow, period, timeZone, tzOffsetMinutes, customFrom, customTo]);
   const from = range.from;
   const to = range.to;
+
+  const [selectedDevice, setSelectedDevice] = useState(null);
+  const { devices: accountDevices } = useAccountDevices({
+    from,
+    to,
+    timeZone,
+    tzOffsetMinutes,
+    accountView,
+    accountAccessToken,
+    accountRevision,
+  });
+  // Device filter is meaningful only across 2+ devices in account view.
+  const showDeviceFilter = accountView && accountDevices.length >= 2;
+  // Reset the filter when leaving account view, or when the selected device
+  // disappears (revoked / not in the latest list).
+  useEffect(() => {
+    if (!showDeviceFilter) {
+      if (selectedDevice !== null) setSelectedDevice(null);
+      return;
+    }
+    if (selectedDevice && !accountDevices.some((d) => d.id === selectedDevice)) {
+      setSelectedDevice(null);
+    }
+  }, [showDeviceFilter, accountDevices, selectedDevice]);
+
+  const deviceOptions = useMemo(() => {
+    if (!showDeviceFilter) return [];
+    return [
+      { value: "", label: copy("dashboard.device_filter.all") },
+      ...accountDevices.map((d) => ({
+        value: d.id,
+        label: d.device_name || copy("dashboard.device_card.unnamed"),
+      })),
+    ];
+  }, [showDeviceFilter, accountDevices, resolvedLocale]);
+
+  const deviceUsageBlock = showDeviceFilter ? (
+    <DeviceUsageCard
+      devices={accountDevices}
+      selectedDeviceId={selectedDevice || ""}
+      onSelectDevice={(id) => setSelectedDevice(id || null)}
+    />
+  ) : null;
+
   const timeZoneLabel = useMemo(
     () => formatTimeZoneLabel({ timeZone, offsetMinutes: tzOffsetMinutes }),
     [timeZone, tzOffsetMinutes],
@@ -458,6 +504,7 @@ export function DashboardPage({
     accountAccessToken,
     accountRevision,
     accountViewResolving,
+    deviceId: selectedDevice,
   });
   const {
     daily: dailyBreakdownDaily,
@@ -497,6 +544,7 @@ export function DashboardPage({
     accountAccessToken,
     accountRevision,
     accountViewResolving,
+    deviceId: selectedDevice,
   });
 
   const [projectUsageLimit, setProjectUsageLimit] = useState(3);
@@ -547,6 +595,7 @@ export function DashboardPage({
     accountAccessToken,
     accountRevision,
     accountViewResolving,
+    deviceId: selectedDevice,
   });
 
   // Stable useTrendData config handed to the zoom modal so it can hold its OWN
@@ -593,6 +642,7 @@ export function DashboardPage({
     accountAccessToken,
     accountRevision,
     accountViewResolving,
+    deviceId: selectedDevice,
   });
 
   const {
@@ -1415,6 +1465,10 @@ export function DashboardPage({
       setDetailsPage={setDetailsPage}
       costModalOpen={costModalOpen}
       closeCostModal={closeCostModal}
+      deviceOptions={deviceOptions}
+      selectedDevice={selectedDevice || ""}
+      onDeviceChange={(v) => setSelectedDevice(v || null)}
+      deviceUsageBlock={deviceUsageBlock}
     />
     <ShareModal
       open={shareModalOpen}

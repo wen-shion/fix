@@ -168,6 +168,10 @@ export function DashboardView(props) {
     detailsPageCount,
     detailsPage,
     setDetailsPage,
+    deviceOptions,
+    selectedDevice,
+    onDeviceChange,
+    deviceUsageBlock,
   } = props;
 
   // Header 和 Footer 已简化
@@ -261,6 +265,12 @@ export function DashboardView(props) {
                   />
                 </FadeIn>
 
+                {deviceUsageBlock ? (
+                  <FadeIn delay={nextLeft()}>
+                    {deviceUsageBlock}
+                  </FadeIn>
+                ) : null}
+
                 {isLocalMode ? <WidgetOnboardingCard enterDelay={nextLeft()} /> : null}
 
                 {shouldShowInstall ? (
@@ -351,6 +361,9 @@ export function DashboardView(props) {
                     onCustomRangeOpenChange={onCustomRangeOpenChange}
                     from={usageFrom}
                     to={usageTo}
+                    deviceOptions={deviceOptions}
+                    selectedDevice={selectedDevice}
+                    onDeviceChange={onDeviceChange}
                   />
                 </FadeIn>
 
