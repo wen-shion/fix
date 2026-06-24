@@ -97,6 +97,12 @@ function Digit({ place, value, height, digitStyle, shouldReduceMotion }) {
     // overflow:hidden. Let the glyph size itself; "." and "," keep their tuned
     // widths.
     const isLetterToken = place !== "." && place !== ",";
+    // The caller's digitStyle.width sizes DIGIT cells. Applied to ".", it
+    // stretches the dot into a full digit slot, leaving a big gap around it (the
+    // comma escapes this via its large negative margin; the dot's -0.04ch
+    // can't). Re-assert the dot's tuned narrow width after digitStyle so it
+    // reads as tight as the thousands comma. Letters still size to auto.
+    const isDot = place === ".";
     return (
       <span
         data-counter-token="static"
@@ -108,6 +114,7 @@ function Digit({ place, value, height, digitStyle, shouldReduceMotion }) {
           ...(isLetterToken
             ? { width: "auto", paddingInline: "0.06ch", justifyContent: "center" }
             : null),
+          ...(isDot ? { width: staticTokenStyle.width } : null),
         }}
       >
         {place}
