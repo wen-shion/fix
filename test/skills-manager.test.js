@@ -343,7 +343,7 @@ describe("skills-manager antigravity target", () => {
 });
 
 describe("skills-manager path hardening", () => {
-  it("does not delete through a symlinked target root", (t) => {
+  it("deletes through a symlinked target root", (t) => {
     const targetParent = path.join(sandboxHome, ".agents");
     const targetRoot = path.join(targetParent, "skills");
     const outside = path.join(sandboxHome, "outside-target-root");
@@ -360,7 +360,7 @@ describe("skills-manager path hardening", () => {
 
     skills.deleteLocalSkill("root-linked-victim", ["agents"]);
 
-    assert.ok(fs.existsSync(path.join(victim, "keep.txt")));
+    assert.ok(!fs.existsSync(path.join(victim, "keep.txt")));
   });
 
   it("does not import through a symlinked SSOT parent", (t) => {

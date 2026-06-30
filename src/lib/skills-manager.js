@@ -577,8 +577,8 @@ function targetSkillPath(baseDir, directory) {
   const targetPath = path.resolve(root, safe);
   if (!pathStrictlyWithin(root, targetPath)) return null;
   try {
-    const rootStat = fs.lstatSync(root);
-    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return null;
+    const rootStat = fs.statSync(root);
+    if (!rootStat.isDirectory()) return null;
   } catch (e) {
     if (e?.code !== "ENOENT") return null;
   }
