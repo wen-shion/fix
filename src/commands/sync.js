@@ -251,7 +251,14 @@ async function cmdSync(argv) {
     }
 
     await migrateRolloutCumulativeDeltaBuckets({ cursors, queuePath, rolloutFiles });
-    await repairCodexRescanInflation({ cursors, queuePath, queueStatePath, rolloutFiles });
+    await repairCodexRescanInflation({
+      cursors,
+      queuePath,
+      queueStatePath,
+      projectQueuePath,
+      projectQueueStatePath,
+      rolloutFiles,
+    });
     await repairDroidDuplicateSessionInflation({ cursors, queuePath, queueStatePath });
     await repairMimoClaudeMislabel({
       cursors,
@@ -1252,11 +1259,10 @@ async function cmdSync(argv) {
 
     const afterState = (await readJson(queueStatePath)) || { offset: 0 };
     const queueSize = await safeStatSize(queuePath);
-    const projectAfterState = (await readJson(projectQueueStatePath)) || { offset: 0 };
-    const projectQueueSize = await safeStatSize(projectQueuePath);
-    const pendingBytes =
-      Math.max(0, queueSize - Number(afterState.offset || 0)) +
-      Math.max(0, projectQueueSize - Number(projectAfterState.offset || 0));
+    // Only the main queue is uploaded by drainQueueToCloud. project.queue.jsonl
+    // is local project-usage state, so counting it here creates false backlog
+    // and can keep auto retry alive even after cloud sync has drained.
+    const pendingBytes = Math.max(0, queueSize - Number(afterState.offset || 0));
 
     if (pendingBytes <= 0) {
       await clearAutoRetry(trackerDir);
@@ -2397,7 +2403,14 @@ async function migrateRolloutCumulativeDeltaBuckets({ cursors, queuePath, rollou
 // contributed is gone from disk (genuinely deleted — Codex-Manager log rotation
 // or user cleanup) the migration is skipped entirely — the forward dedup fix
 // still prevents new double-counting; only this historical correction is deferred.
-async function repairCodexRescanInflation({ cursors, queuePath, queueStatePath, rolloutFiles }) {
+async function repairCodexRescanInflation({
+  cursors,
+  queuePath,
+  queueStatePath,
+  projectQueuePath,
+  projectQueueStatePath,
+  rolloutFiles,
+}) {
   if (!cursors || typeof cursors !== "object") return false;
   const migrations = (cursors.migrations ||= {});
   // A COMPLETED run writes an ISO-string timestamp (final — never re-run). A
@@ -2418,6 +2431,7 @@ async function repairCodexRescanInflation({ cursors, queuePath, queueStatePath, 
     if (fp && src === "codex") codexFiles.push(fp);
   }
   const codexFileSet = new Set(codexFiles);
+  const projectRepairEnabled = typeof projectQueuePath === "string" && projectQueuePath.length > 0;
 
   // GUARD (data-loss prevention, ref the v6 ground-truth-repair incident): the
   // rebuild can only reproduce buckets from the files this sync re-parses
@@ -2438,7 +2452,7 @@ async function repairCodexRescanInflation({ cursors, queuePath, queueStatePath, 
   }
   if (cursors.files && typeof cursors.files === "object") {
     for (const fp of Object.keys(cursors.files)) {
-      if (!/\/\.codex\/(?:archived_)?sessions\//.test(fp)) continue;
+      if (!isCodexSessionCursorPath(fp)) continue;
       if (codexFileSet.has(fp)) continue; // exact file re-scanned this run
       const id = codexSessionIdFromPath(fp);
       if (id && scannedSessionIds.has(id)) continue; // same session scanned elsewhere (moved)
@@ -2460,6 +2474,9 @@ async function repairCodexRescanInflation({ cursors, queuePath, queueStatePath, 
   // would permanently zero a user's codex history.
   let rebuilt;
   const tmpQueue = `${queuePath}.codexrebuild.${process.pid}.${Date.now()}`;
+  const tmpProjectQueue = projectRepairEnabled
+    ? `${projectQueuePath}.codexrebuild.${process.pid}.${Date.now()}`
+    : null;
   try {
     const tmpCursors = {
       version: 1,
@@ -2471,6 +2488,7 @@ async function repairCodexRescanInflation({ cursors, queuePath, queueStatePath, 
       rolloutFiles: codexFiles.map((p) => ({ path: p, source: "codex" })),
       cursors: tmpCursors,
       queuePath: tmpQueue,
+      projectQueuePath: tmpProjectQueue,
     });
     let tmpRaw = "";
     try {
@@ -2478,12 +2496,22 @@ async function repairCodexRescanInflation({ cursors, queuePath, queueStatePath, 
     } catch (e) {
       if (e?.code !== "ENOENT") throw e;
     }
+    let tmpProjectRaw = "";
+    if (tmpProjectQueue) {
+      try {
+        tmpProjectRaw = await fs.readFile(tmpProjectQueue, "utf8");
+      } catch (e) {
+        if (e?.code !== "ENOENT") throw e;
+      }
+    }
     rebuilt = {
       buckets: tmpCursors.hourly.buckets || {},
       groupQueued: tmpCursors.hourly.groupQueued || {},
       codexHashes: Array.isArray(tmpCursors.codexHashes) ? tmpCursors.codexHashes : [],
       files: tmpCursors.files || {},
       queueRows: tmpRaw.split("\n").filter((l) => l.trim()),
+      projectHourly: tmpCursors.projectHourly || null,
+      projectQueueRows: tmpProjectRaw.split("\n").filter((l) => l.trim()),
     };
   } catch (e) {
     console.error(
@@ -2493,6 +2521,7 @@ async function repairCodexRescanInflation({ cursors, queuePath, queueStatePath, 
     return false;
   } finally {
     await fs.rm(tmpQueue, { force: true }).catch(() => {});
+    if (tmpProjectQueue) await fs.rm(tmpProjectQueue, { force: true }).catch(() => {});
   }
 
   // SANITY: codex files exist on disk but the rebuild produced no codex buckets
@@ -2504,6 +2533,64 @@ async function repairCodexRescanInflation({ cursors, queuePath, queueStatePath, 
       `[sync] codex rescan repair: rebuild produced 0 codex buckets from ${codexFiles.length} files — skipping to avoid data loss`,
     );
     return false;
+  }
+  if (projectRepairEnabled) {
+    const malformedProjectRows = await countMalformedCodexProjectQueueRows(projectQueuePath);
+    if (malformedProjectRows > 0) {
+      console.error(
+        `[sync] codex rescan repair: found ${malformedProjectRows} malformed codex project queue row(s) — skipping to avoid data loss`,
+      );
+      return false;
+    }
+
+    const existingProjectKeys = new Set([
+      ...(await projectUsageKeysFromQueuePath(projectQueuePath, "codex")),
+      ...projectUsageKeysFromState(cursors.projectHourly, "codex"),
+    ]);
+    const rebuiltProjectKeys = new Set([
+      ...projectUsageKeysFromQueueRows(rebuilt.projectQueueRows, "codex"),
+      ...projectUsageKeysFromState(rebuilt.projectHourly, "codex"),
+    ]);
+    const missingProjectKeys = [...existingProjectKeys].filter((key) => !rebuiltProjectKeys.has(key));
+    if (missingProjectKeys.length > 0) {
+      console.error(
+        `[sync] codex rescan repair: project rebuild missed ${missingProjectKeys.length} existing codex project bucket(s) — skipping to avoid data loss`,
+      );
+      return false;
+    }
+
+    const existingProjectTotals = mergeMaxTotals(
+      await projectUsageTotalsFromQueuePath(projectQueuePath, "codex"),
+      projectUsageTotalsFromState(cursors.projectHourly, "codex"),
+    );
+    const rebuiltProjectTotals = mergeMaxTotals(
+      projectUsageTotalsFromQueueRows(rebuilt.projectQueueRows, "codex"),
+      projectUsageTotalsFromState(rebuilt.projectHourly, "codex"),
+    );
+    const existingMainHourTotals = mergeMaxTotals(
+      await mainUsageHourTotalsFromQueuePath(queuePath, "codex"),
+      mainUsageHourTotalsFromState(cursors.hourly, "codex"),
+    );
+    const rebuiltMainHourTotals = mergeMaxTotals(
+      mainUsageHourTotalsFromQueueRows(rebuilt.queueRows, "codex"),
+      mainUsageHourTotalsFromState({ buckets: rebuilt.buckets }, "codex"),
+    );
+    const partialProjectKeys = [];
+    for (const [key, existingTotal] of existingProjectTotals.entries()) {
+      const rebuiltTotal = rebuiltProjectTotals.get(key);
+      if (!Number.isFinite(rebuiltTotal) || rebuiltTotal >= existingTotal) continue;
+      const [, source, hourStart] = key.split("|");
+      const mainKey = `${source}|${hourStart}`;
+      const existingMainTotal = existingMainHourTotals.get(mainKey) || 0;
+      const rebuiltMainTotal = rebuiltMainHourTotals.get(mainKey) || 0;
+      if (rebuiltMainTotal >= existingMainTotal) partialProjectKeys.push(key);
+    }
+    if (partialProjectKeys.length > 0) {
+      console.error(
+        `[sync] codex rescan repair: project rebuild lowered ${partialProjectKeys.length} existing codex project bucket(s) without a matching main-bucket repair — skipping to avoid data loss`,
+      );
+      return false;
+    }
   }
 
   // COMMIT (only after a verified rebuild). A crash partway just leaves the
@@ -2559,14 +2646,65 @@ async function repairCodexRescanInflation({ cursors, queuePath, queueStatePath, 
   }
   cursors.files ||= {};
   for (const fp of Object.keys(cursors.files)) {
-    if (/\/\.codex\/(?:archived_)?sessions\//.test(fp)) delete cursors.files[fp];
+    if (isCodexSessionCursorPath(fp)) delete cursors.files[fp];
   }
   for (const [fp, v] of Object.entries(rebuilt.files)) {
     cursors.files[fp] = v;
   }
   cursors.codexHashes = rebuilt.codexHashes;
 
-  // 3. Reset the cloud upload offset so the corrected queue re-uploads. Other
+  // 3. Project usage mirrors the main Codex repair: drop inflated Codex project
+  //    rows, append the rebuilt rows, and swap only Codex project buckets. Project
+  //    metadata is merged so visibility/purge state from non-Codex sources stays.
+  if (projectRepairEnabled) {
+    let projectRaw = "";
+    try {
+      projectRaw = await fs.readFile(projectQueuePath, "utf8");
+    } catch (e) {
+      if (e?.code !== "ENOENT") throw e;
+    }
+    const keptProjectRows = [];
+    for (const line of projectRaw.split("\n")) {
+      if (!line.trim()) continue;
+      let row;
+      try {
+        row = JSON.parse(line);
+      } catch (_e) {
+        keptProjectRows.push(line);
+        continue;
+      }
+      if (row?.source === "codex") continue;
+      keptProjectRows.push(line);
+    }
+    await ensureDir(path.dirname(projectQueuePath));
+    const tmp = `${projectQueuePath}.tmp.${process.pid}.${Date.now()}`;
+    await fs.writeFile(
+      tmp,
+      keptProjectRows.concat(rebuilt.projectQueueRows).join("\n") + "\n",
+      "utf8",
+    );
+    await fs.rename(tmp, projectQueuePath);
+
+    const projectHourly = (cursors.projectHourly ||= { version: 2, buckets: {}, projects: {} });
+    projectHourly.version = 2;
+    projectHourly.buckets ||= {};
+    projectHourly.projects ||= {};
+    for (const [key, bucket] of Object.entries(projectHourly.buckets)) {
+      const source = typeof bucket?.source === "string" ? bucket.source : key.split("|")[1];
+      if (source === "codex") delete projectHourly.buckets[key];
+    }
+    const rebuiltProjectHourly = rebuilt.projectHourly || {};
+    for (const [key, bucket] of Object.entries(rebuiltProjectHourly.buckets || {})) {
+      const source = typeof bucket?.source === "string" ? bucket.source : key.split("|")[1];
+      if (source === "codex") projectHourly.buckets[key] = bucket;
+    }
+    for (const [key, meta] of Object.entries(rebuiltProjectHourly.projects || {})) {
+      if (meta && typeof meta === "object") projectHourly.projects[key] = meta;
+    }
+    projectHourly.updatedAt = new Date().toISOString();
+  }
+
+  // 4. Reset the cloud upload offset so the corrected queue re-uploads. Other
   //    sources re-upsert idempotently (last emission per key wins).
   if (typeof queueStatePath === "string" && queueStatePath) {
     let uploadState = {};
@@ -2580,9 +2718,247 @@ async function repairCodexRescanInflation({ cursors, queuePath, queueStatePath, 
     uploadState.note = "reset_after_codex_rescan_dedup_2026_06";
     await fs.writeFile(queueStatePath, JSON.stringify(uploadState));
   }
+  if (projectRepairEnabled && typeof projectQueueStatePath === "string" && projectQueueStatePath) {
+    let uploadState = {};
+    try {
+      uploadState = JSON.parse(await fs.readFile(projectQueueStatePath, "utf8"));
+    } catch (_e) {
+      uploadState = {};
+    }
+    uploadState.offset = 0;
+    uploadState.updatedAt = new Date().toISOString();
+    uploadState.note = "reset_after_codex_rescan_dedup_2026_06";
+    await fs.writeFile(projectQueueStatePath, JSON.stringify(uploadState));
+  }
 
   migrations[CODEX_RESCAN_DEDUP_REPAIR_KEY] = new Date().toISOString();
   return true;
+}
+
+function isCodexSessionCursorPath(filePath) {
+  if (typeof filePath !== "string") return false;
+  const normalized = filePath.replace(/\\/g, "/");
+  return /\/\.codex\/(?:archived_)?sessions\//.test(normalized);
+}
+
+async function projectUsageKeysFromQueuePath(queuePath, source) {
+  if (typeof queuePath !== "string" || !queuePath) return [];
+  let raw = "";
+  try {
+    raw = await fs.readFile(queuePath, "utf8");
+  } catch (e) {
+    if (e?.code !== "ENOENT") throw e;
+    return [];
+  }
+  return projectUsageKeysFromQueueRows(raw.split("\n").filter((line) => line.trim()), source);
+}
+
+function projectUsageKeysFromQueueRows(rows, source) {
+  const keys = [];
+  for (const line of Array.isArray(rows) ? rows : []) {
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch (_e) {
+      continue;
+    }
+    const key = projectUsageKeyFromFields({
+      projectKey: row?.project_key,
+      source: row?.source,
+      hourStart: row?.hour_start,
+    });
+    if (key && row?.source === source) keys.push(key);
+  }
+  return keys;
+}
+
+function projectUsageKeysFromState(projectState, source) {
+  const buckets =
+    projectState && typeof projectState === "object" && projectState.buckets
+      ? projectState.buckets
+      : {};
+  const keys = [];
+  for (const [key, bucket] of Object.entries(buckets)) {
+    const bucketSource = typeof bucket?.source === "string" ? bucket.source : key.split("|")[1];
+    if (bucketSource !== source) continue;
+    const usageKey =
+      projectUsageKeyFromFields({
+        projectKey: bucket?.project_key,
+        source: bucketSource,
+        hourStart: bucket?.hour_start,
+      }) || key;
+    keys.push(usageKey);
+  }
+  return keys;
+}
+
+function projectUsageKeyFromFields({ projectKey, source, hourStart }) {
+  if (
+    typeof projectKey !== "string" ||
+    typeof source !== "string" ||
+    typeof hourStart !== "string" ||
+    !projectKey ||
+    !source ||
+    !hourStart
+  ) {
+    return null;
+  }
+  return `${projectKey}|${source}|${hourStart}`;
+}
+
+async function countMalformedCodexProjectQueueRows(queuePath) {
+  if (typeof queuePath !== "string" || !queuePath) return 0;
+  let raw = "";
+  try {
+    raw = await fs.readFile(queuePath, "utf8");
+  } catch (e) {
+    if (e?.code !== "ENOENT") throw e;
+    return 0;
+  }
+  let count = 0;
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch (_e) {
+      continue;
+    }
+    if (row?.source !== "codex") continue;
+    const key = projectUsageKeyFromFields({
+      projectKey: row?.project_key,
+      source: row?.source,
+      hourStart: row?.hour_start,
+    });
+    if (!key) count += 1;
+  }
+  return count;
+}
+
+async function projectUsageTotalsFromQueuePath(queuePath, source) {
+  if (typeof queuePath !== "string" || !queuePath) return new Map();
+  let raw = "";
+  try {
+    raw = await fs.readFile(queuePath, "utf8");
+  } catch (e) {
+    if (e?.code !== "ENOENT") throw e;
+    return new Map();
+  }
+  return projectUsageTotalsFromQueueRows(raw.split("\n").filter((line) => line.trim()), source);
+}
+
+function projectUsageTotalsFromQueueRows(rows, source) {
+  const totals = new Map();
+  for (const line of Array.isArray(rows) ? rows : []) {
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch (_e) {
+      continue;
+    }
+    const key = projectUsageKeyFromFields({
+      projectKey: row?.project_key,
+      source: row?.source,
+      hourStart: row?.hour_start,
+    });
+    if (!key || row?.source !== source) continue;
+    setMaxTotal(totals, key, Number(row.total_tokens || 0));
+  }
+  return totals;
+}
+
+function projectUsageTotalsFromState(projectState, source) {
+  const buckets =
+    projectState && typeof projectState === "object" && projectState.buckets
+      ? projectState.buckets
+      : {};
+  const totals = new Map();
+  for (const [key, bucket] of Object.entries(buckets)) {
+    const bucketSource = typeof bucket?.source === "string" ? bucket.source : key.split("|")[1];
+    if (bucketSource !== source) continue;
+    const usageKey =
+      projectUsageKeyFromFields({
+        projectKey: bucket?.project_key,
+        source: bucketSource,
+        hourStart: bucket?.hour_start,
+      }) || key;
+    setMaxTotal(totals, usageKey, Number(bucket?.totals?.total_tokens || 0));
+  }
+  return totals;
+}
+
+async function mainUsageHourTotalsFromQueuePath(queuePath, source) {
+  if (typeof queuePath !== "string" || !queuePath) return new Map();
+  let raw = "";
+  try {
+    raw = await fs.readFile(queuePath, "utf8");
+  } catch (e) {
+    if (e?.code !== "ENOENT") throw e;
+    return new Map();
+  }
+  return mainUsageHourTotalsFromQueueRows(raw.split("\n").filter((line) => line.trim()), source);
+}
+
+function mainUsageHourTotalsFromQueueRows(rows, source) {
+  const modelTotals = new Map();
+  for (const line of Array.isArray(rows) ? rows : []) {
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch (_e) {
+      continue;
+    }
+    if (row?.source !== source || typeof row?.hour_start !== "string") continue;
+    const model = typeof row?.model === "string" && row.model ? row.model : "unknown";
+    setMaxTotal(modelTotals, `${row.source}|${model}|${row.hour_start}`, Number(row.total_tokens || 0));
+  }
+  return collapseModelTotalsByHour(modelTotals);
+}
+
+function mainUsageHourTotalsFromState(hourlyState, source) {
+  const buckets =
+    hourlyState && typeof hourlyState === "object" && hourlyState.buckets
+      ? hourlyState.buckets
+      : {};
+  const modelTotals = new Map();
+  for (const [key, bucket] of Object.entries(buckets)) {
+    const parts = key.split("|");
+    const bucketSource = typeof bucket?.source === "string" ? bucket.source : parts[0];
+    if (bucketSource !== source) continue;
+    const model = typeof bucket?.model === "string" && bucket.model ? bucket.model : parts[1] || "unknown";
+    const hourStart =
+      typeof bucket?.hour_start === "string" && bucket.hour_start ? bucket.hour_start : parts[2];
+    if (typeof hourStart !== "string" || !hourStart) continue;
+    setMaxTotal(modelTotals, `${bucketSource}|${model}|${hourStart}`, Number(bucket?.totals?.total_tokens || 0));
+  }
+  return collapseModelTotalsByHour(modelTotals);
+}
+
+function collapseModelTotalsByHour(modelTotals) {
+  const totals = new Map();
+  for (const [key, total] of modelTotals.entries()) {
+    const [source, , hourStart] = key.split("|");
+    const hourKey = `${source}|${hourStart}`;
+    totals.set(hourKey, (totals.get(hourKey) || 0) + total);
+  }
+  return totals;
+}
+
+function mergeMaxTotals(...maps) {
+  const merged = new Map();
+  for (const map of maps) {
+    if (!(map instanceof Map)) continue;
+    for (const [key, total] of map.entries()) {
+      setMaxTotal(merged, key, total);
+    }
+  }
+  return merged;
+}
+
+function setMaxTotal(map, key, total) {
+  if (!key || !Number.isFinite(total)) return;
+  const prev = map.get(key);
+  if (!Number.isFinite(prev) || total > prev) map.set(key, total);
 }
 
 // One-time repair (#204): when the SAME Droid session id existed in two folders

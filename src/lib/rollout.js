@@ -154,7 +154,26 @@ async function parseRolloutIncremental({
     const lastTotal = sameInode && !truncated ? prev.lastTotal || null : null;
     const lastModel = sameInode && !truncated ? prev.lastModel || null : null;
 
-    if (!projectEnabled && sameInode && !truncated && startOffset >= st.size) {
+    const codexProjectFastPath = projectEnabled && fileSource === DEFAULT_SOURCE;
+    const projectOffset = sameInode && !truncated ? Number(prev.projectOffset || 0) : 0;
+    const projectUpToDate =
+      codexProjectFastPath &&
+      typeof publicRepoResolver !== "function" &&
+      projectOffset >= st.size &&
+      (await isProjectFileContextFresh(prev?.projectFileContext));
+    const projectContextOnlyScan =
+      codexProjectFastPath &&
+      typeof publicRepoResolver !== "function" &&
+      sameInode &&
+      !truncated &&
+      startOffset >= st.size &&
+      !projectUpToDate;
+    if (
+      sameInode &&
+      !truncated &&
+      startOffset >= st.size &&
+      (!projectEnabled || projectUpToDate)
+    ) {
       if (cb) {
         cb({
           index: idx + 1,
@@ -180,33 +199,54 @@ async function parseRolloutIncremental({
     const projectRef = projectContext?.projectRef || null;
     const projectKey = projectContext?.projectKey || null;
 
-    const result = await parseRolloutFile({
-      filePath,
-      fileStat: st,
-      startOffset,
-      lastTotal,
-      lastModel,
-      hourlyState,
-      touchedBuckets,
-      source: fileSource,
-      projectState,
-      projectTouchedBuckets,
-      projectRef,
-      projectKey,
-      projectMetaCache,
-      publicRepoCache,
-      publicRepoResolver,
-      seenCodexEvents,
-      sessionId: codexSessionIdFromPath(filePath),
-    });
+    const result = projectContextOnlyScan
+      ? await scanRolloutProjectFileContexts({
+          filePath,
+          fileStat: st,
+          lastTotal,
+          lastModel,
+          projectState,
+          projectMetaCache,
+          publicRepoCache,
+          publicRepoResolver,
+          projectContext,
+        })
+      : await parseRolloutFile({
+          filePath,
+          fileStat: st,
+          startOffset,
+          lastTotal,
+          lastModel,
+          hourlyState,
+          touchedBuckets,
+          source: fileSource,
+          projectState,
+          projectTouchedBuckets,
+          projectRef,
+          projectKey,
+          projectMetaCache,
+          publicRepoCache,
+          publicRepoResolver,
+          projectContext,
+          seenCodexEvents,
+          sessionId: codexSessionIdFromPath(filePath),
+        });
 
-    cursors.files[key] = {
+    const nextCursor = {
       inode,
       offset: result.endOffset,
       lastTotal: result.lastTotal,
       lastModel: result.lastModel,
       updatedAt: new Date().toISOString(),
     };
+    if (codexProjectFastPath) {
+      nextCursor.projectOffset = result.endOffset;
+      nextCursor.projectFileContext = buildProjectFileContext(result.projectFileContexts);
+    } else if (Number.isFinite(prev?.projectOffset)) {
+      nextCursor.projectOffset = prev.projectOffset;
+      if (prev?.projectFileContext) nextCursor.projectFileContext = prev.projectFileContext;
+    }
+    cursors.files[key] = nextCursor;
 
     filesProcessed += 1;
     eventsAggregated += result.eventsAggregated;
@@ -820,13 +860,16 @@ async function parseRolloutFile({
   projectMetaCache,
   publicRepoCache,
   publicRepoResolver,
+  projectContext,
   seenCodexEvents,
   sessionId,
 }) {
   const st = fileStat || (await fs.stat(filePath));
   const endOffset = st.size;
+  const projectFileContexts = [];
+  addProjectFileContext(projectFileContexts, projectContext);
   if (startOffset >= endOffset) {
-    return { endOffset, lastTotal, lastModel, eventsAggregated: 0 };
+    return { endOffset, lastTotal, lastModel, eventsAggregated: 0, projectFileContexts };
   }
 
   const stream = fssync.createReadStream(filePath, { encoding: "utf8", start: startOffset });
@@ -888,6 +931,7 @@ async function parseRolloutFile({
           currentCwd = nextCwd;
           currentProjectRef = context?.projectRef || null;
           currentProjectKey = context?.projectKey || null;
+          addProjectFileContext(projectFileContexts, context);
         }
       }
       continue;
@@ -958,7 +1002,73 @@ async function parseRolloutFile({
     eventsAggregated += 1;
   }
 
-  return { endOffset, lastTotal: totals, lastModel: model, eventsAggregated };
+  return { endOffset, lastTotal: totals, lastModel: model, eventsAggregated, projectFileContexts };
+}
+
+async function scanRolloutProjectFileContexts({
+  filePath,
+  fileStat,
+  lastTotal,
+  lastModel,
+  projectState,
+  projectMetaCache,
+  publicRepoCache,
+  publicRepoResolver,
+  projectContext,
+}) {
+  const st = fileStat || (await fs.stat(filePath));
+  const endOffset = st.size;
+  const projectFileContexts = [];
+  addProjectFileContext(projectFileContexts, projectContext);
+  if (!projectState || endOffset <= 0) {
+    return { endOffset, lastTotal, lastModel, eventsAggregated: 0, projectFileContexts };
+  }
+
+  const stream = fssync.createReadStream(filePath, { encoding: "utf8", start: 0 });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  let currentCwd = null;
+
+  for await (const line of rl) {
+    if (
+      !line ||
+      !(
+        line.includes('"turn_context"') ||
+        line.includes('"session_meta"')
+      ) ||
+      !line.includes('"cwd"')
+    ) {
+      continue;
+    }
+
+    let obj;
+    try {
+      obj = JSON.parse(line);
+    } catch (_e) {
+      continue;
+    }
+    if (
+      (obj?.type !== "turn_context" && obj?.type !== "session_meta") ||
+      !obj?.payload ||
+      typeof obj.payload !== "object" ||
+      typeof obj.payload.cwd !== "string"
+    ) {
+      continue;
+    }
+
+    const nextCwd = obj.payload.cwd.trim();
+    if (!nextCwd || nextCwd === currentCwd) continue;
+    const context = await resolveProjectContextForPath({
+      startDir: nextCwd,
+      projectMetaCache,
+      publicRepoCache,
+      publicRepoResolver,
+      projectState,
+    });
+    currentCwd = nextCwd;
+    addProjectFileContext(projectFileContexts, context);
+  }
+
+  return { endOffset, lastTotal, lastModel, eventsAggregated: 0, projectFileContexts };
 }
 
 async function parseClaudeFile({
@@ -1987,9 +2097,17 @@ async function resolveProjectMetaForPath(startDir, cache) {
 
     const configPath = await resolveGitConfigPath(current);
     if (configPath) {
+      const configStat = await fs.stat(configPath).catch(() => null);
       const remoteUrl = await readGitRemoteUrl(configPath);
       const projectRef = canonicalizeProjectRef(remoteUrl);
-      const meta = { projectRef: projectRef || null, repoRoot: current };
+      const meta = {
+        projectRef: projectRef || null,
+        repoRoot: current,
+        configPath,
+        configMtimeMs:
+          configStat && Number.isFinite(configStat.mtimeMs) ? configStat.mtimeMs : null,
+        configSize: configStat && Number.isFinite(configStat.size) ? configStat.size : null,
+      };
       if (cache) {
         for (const entry of visited) cache.set(entry, meta);
       }
@@ -2006,6 +2124,69 @@ async function resolveProjectMetaForPath(startDir, cache) {
     for (const entry of visited) cache.set(entry, null);
   }
   return null;
+}
+
+function addProjectFileContext(contexts, projectContext) {
+  if (!Array.isArray(contexts) || !projectContext || typeof projectContext !== "object") return;
+  const configPath =
+    typeof projectContext.configPath === "string" && projectContext.configPath
+      ? projectContext.configPath
+      : null;
+  if (!configPath) return;
+  contexts.push(projectContext);
+}
+
+function buildProjectFileContext(projectContexts) {
+  const contexts = Array.isArray(projectContexts)
+    ? projectContexts
+    : projectContexts && typeof projectContexts === "object"
+      ? [projectContexts]
+      : [];
+  const seen = new Set();
+  const configs = [];
+  for (const context of contexts) {
+    const configPath =
+      typeof context?.configPath === "string" && context.configPath ? context.configPath : null;
+    if (!configPath || seen.has(configPath)) continue;
+    seen.add(configPath);
+    configs.push({
+      configPath,
+      configMtimeMs: Number.isFinite(context.configMtimeMs) ? context.configMtimeMs : null,
+      configSize: Number.isFinite(context.configSize) ? context.configSize : null,
+    });
+  }
+  if (configs.length === 0) return { absent: true };
+  if (configs.length > 1) return { configs };
+  const [config] = configs;
+  return {
+    ...config,
+    configs,
+  };
+}
+
+async function isProjectFileContextFresh(projectFileContext) {
+  if (!projectFileContext || typeof projectFileContext !== "object") return false;
+  if (projectFileContext.absent === true) return false;
+  if (Array.isArray(projectFileContext.configs)) {
+    if (projectFileContext.configs.length === 0) return false;
+    for (const config of projectFileContext.configs) {
+      if (!(await isSingleProjectConfigFresh(config))) return false;
+    }
+    return true;
+  }
+  return isSingleProjectConfigFresh(projectFileContext);
+}
+
+async function isSingleProjectConfigFresh(projectFileContext) {
+  const configPath =
+    typeof projectFileContext.configPath === "string" ? projectFileContext.configPath : null;
+  if (!configPath) return false;
+  const st = await fs.stat(configPath).catch(() => null);
+  if (!st || !st.isFile()) return false;
+  return (
+    st.mtimeMs === projectFileContext.configMtimeMs &&
+    st.size === projectFileContext.configSize
+  );
 }
 
 function hashRepoRoot(repoRoot) {
@@ -2127,15 +2308,28 @@ async function resolveProjectContextForPath({
     projectKey: meta?.projectKey || null,
     status: meta?.status || "blocked",
     repoRootHash: meta?.repoRootHash || repoRootHash,
+    configPath: projectMeta.configPath || null,
+    configMtimeMs: projectMeta.configMtimeMs ?? null,
+    configSize: projectMeta.configSize ?? null,
   };
   recordProjectMeta(projectState, normalized);
   if (normalized.status !== "public_verified") {
-    return { projectRef: normalized.projectRef, projectKey: null, status: normalized.status };
+    return {
+      projectRef: normalized.projectRef,
+      projectKey: null,
+      status: normalized.status,
+      configPath: normalized.configPath,
+      configMtimeMs: normalized.configMtimeMs,
+      configSize: normalized.configSize,
+    };
   }
   return {
     projectRef: normalized.projectRef,
     projectKey: normalized.projectKey,
     status: normalized.status,
+    configPath: normalized.configPath,
+    configMtimeMs: normalized.configMtimeMs,
+    configSize: normalized.configSize,
   };
 }
 
