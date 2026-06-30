@@ -1024,13 +1024,19 @@ function normalizeGeminiQuotaResponse({ buckets, email, tier }) {
 }
 
 async function fetchGeminiLimits({ home, env, fetchImpl = fetch, commandRunner } = {}) {
-  if (!(await isBinaryAvailable("gemini", { commandRunner }))) {
+  const settings = loadGeminiSettings({ home, env });
+  const credentials = loadGeminiCredentials({ home, env });
+  // Gemini is "configured" only if there are real OAuth credentials OR the
+  // gemini CLI is installed. A bare ~/.gemini/settings.json is not enough:
+  // sibling products (Antigravity) also live under ~/.gemini and would
+  // otherwise surface a spurious "Not logged in to Gemini" card. Do NOT
+  // require the binary when credentials exist — authenticated users on a
+  // minimal launchd PATH have no `gemini` on PATH (issue #224).
+  if (!credentials && !(await isBinaryAvailable("gemini", { commandRunner }))) {
     return { configured: false };
   }
-
-  const settings = loadGeminiSettings({ home, env });
   const selectedType = settings?.security?.auth?.selectedType ?? null;
-  if (!settings && !loadGeminiCredentials({ home, env })) {
+  if (!settings && !credentials) {
     return { configured: false };
   }
   if (selectedType === "api-key") {
@@ -1040,7 +1046,7 @@ async function fetchGeminiLimits({ home, env, fetchImpl = fetch, commandRunner }
     return { configured: true, error: "Gemini Vertex AI auth not supported. Use Google account (OAuth) instead." };
   }
 
-  const creds = loadGeminiCredentials({ home, env });
+  const creds = credentials;
   if (!creds?.access_token) {
     return { configured: true, error: "Not logged in to Gemini. Run 'gemini' in Terminal to authenticate." };
   }
@@ -2155,13 +2161,25 @@ function normalizeAntigravityQuotaSummary(body) {
     }
   }
 
-  return {
-    account_email: null, // quota summary doesn't include email
-    account_plan: null,  // quota summary doesn't include plan info
+  const windows = {
     primary_window: makeWindow(buckets["3p-weekly"]?.remainingFraction, buckets["3p-weekly"]?.resetTime),
     secondary_window: makeWindow(buckets["3p-5h"]?.remainingFraction, buckets["3p-5h"]?.resetTime),
     tertiary_window: makeWindow(buckets["gemini-weekly"]?.remainingFraction, buckets["gemini-weekly"]?.resetTime),
     quaternary_window: makeWindow(buckets["gemini-5h"]?.remainingFraction, buckets["gemini-5h"]?.resetTime),
+  };
+
+  // If the groups parsed but none of the known bucketIds matched (upstream
+  // renamed them), treat it as a parse failure so the caller falls back to
+  // GetUserStatus rather than rendering an empty, error-free card.
+  if (!windows.primary_window && !windows.secondary_window
+    && !windows.tertiary_window && !windows.quaternary_window) {
+    throw new Error("Could not parse Antigravity quota summary: no known buckets matched.");
+  }
+
+  return {
+    account_email: null, // quota summary doesn't include email
+    account_plan: null,  // quota summary doesn't include plan info
+    ...windows,
   };
 }
 

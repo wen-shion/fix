@@ -158,6 +158,35 @@ describe("getUsageLimits gemini no-creds", () => {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  it("stays configured when credentials exist but the gemini binary is not on PATH (issue #224)", async () => {
+    // Regression: a `which gemini` guard must not hide the card for an
+    // authenticated user on a minimal launchd PATH where `gemini` isn't found.
+    resetUsageLimitsCache();
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-limits-gemini-nobin-"));
+    try {
+      const geminiDir = path.join(tmp, ".gemini");
+      fs.mkdirSync(geminiDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(geminiDir, "oauth_creds.json"),
+        JSON.stringify({ access_token: "tok", expiry_date: Date.now() + 3_600_000 }),
+      );
+
+      const result = await getUsageLimits({
+        home: tmp,
+        platform: "linux",
+        providerTimeoutMs: 1000,
+        securityRunner() { return { status: 1, stdout: "" }; },
+        commandRunner() { return { status: 1, stdout: "" }; }, // no `gemini` on PATH
+        fetchImpl() { return Promise.resolve({ ok: false, status: 500, async json() { return {}; }, async text() { return ""; } }); },
+      });
+
+      assert.notEqual(result.gemini.configured, false);
+    } finally {
+      resetUsageLimitsCache();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("getUsageLimits antigravity cache", () => {
