@@ -8910,6 +8910,9 @@ async function parseAntigravityFile({
   const resumed = canResume && (cachedTokens > 0 || cachedModel !== null);
   const scanStart = resumed ? lastLine : 0;
   let currentModel = resumed ? cachedModel : null;
+  if (!currentModel) {
+    currentModel = await readAntigravityDefaultModel(filePath);
+  }
   let contextTokens = resumed ? cachedTokens : 0;
   // Snapshot of contextTokens at the last PLANNER_RESPONSE we billed for. Only
   // tokens accumulated AFTER that point count as new input on the next planner
@@ -9019,6 +9022,22 @@ async function parseAntigravityFile({
     previousContextTokens,
     currentModel,
   };
+}
+
+async function readAntigravityDefaultModel(filePath) {
+  try {
+    // filePath: …/antigravity-cli/brain/<uuid>/.system_generated/logs/transcript.jsonl
+    // Go up 5 levels to reach the variant root (e.g. …/antigravity-cli/)
+    let dir = filePath;
+    for (let i = 0; i < 5; i++) dir = path.dirname(dir);
+    const raw = await fs.readFile(path.join(dir, "settings.json"), "utf8");
+    const settings = JSON.parse(raw);
+    if (settings.model && typeof settings.model === "string") {
+      return normalizeAntigravityTranscriptModel(settings.model);
+    }
+  } catch (_) {
+  }
+  return null;
 }
 
 function parseAntigravityModelSelection(content) {

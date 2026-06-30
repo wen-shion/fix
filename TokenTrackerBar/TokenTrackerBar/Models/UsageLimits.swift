@@ -303,6 +303,7 @@ struct AntigravityLimits: Codable, Equatable {
     let primaryWindow: GenericLimitWindow?
     let secondaryWindow: GenericLimitWindow?
     let tertiaryWindow: GenericLimitWindow?
+    let quaternaryWindow: GenericLimitWindow?
 
     enum CodingKeys: String, CodingKey {
         case configured, error
@@ -312,6 +313,7 @@ struct AntigravityLimits: Codable, Equatable {
         case primaryWindow = "primary_window"
         case secondaryWindow = "secondary_window"
         case tertiaryWindow = "tertiary_window"
+        case quaternaryWindow = "quaternary_window"
     }
 }
 

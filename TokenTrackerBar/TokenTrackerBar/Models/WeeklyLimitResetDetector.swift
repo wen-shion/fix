@@ -166,7 +166,7 @@ extension UsageLimitsResponse {
         addGeneric("cursor", cursor.configured, cursor.error, [("primary", cursor.primaryWindow), ("secondary", cursor.secondaryWindow), ("tertiary", cursor.tertiaryWindow)])
         addGeneric("gemini", gemini.configured, gemini.error, [("primary", gemini.primaryWindow), ("secondary", gemini.secondaryWindow), ("tertiary", gemini.tertiaryWindow)])
         addGeneric("kiro", kiro.configured, kiro.error, [("primary", kiro.primaryWindow), ("secondary", kiro.secondaryWindow)])
-        addGeneric("antigravity", antigravity.configured, antigravity.error, [("primary", antigravity.primaryWindow), ("secondary", antigravity.secondaryWindow), ("tertiary", antigravity.tertiaryWindow)])
+        addGeneric("antigravity", antigravity.configured, antigravity.error, [("primary", antigravity.primaryWindow), ("secondary", antigravity.secondaryWindow), ("tertiary", antigravity.tertiaryWindow), ("quaternary", antigravity.quaternaryWindow)])
         if let kimi { addGeneric("kimi", kimi.configured, kimi.error, [("primary", kimi.primaryWindow), ("secondary", kimi.secondaryWindow), ("tertiary", kimi.tertiaryWindow)]) }
         if let grok { addGeneric("grok", grok.configured, grok.error, [("primary", grok.primaryWindow), ("secondary", grok.secondaryWindow)]) }
         if let copilot { addGeneric("copilot", copilot.configured, copilot.error, [("primary", copilot.primaryWindow), ("secondary", copilot.secondaryWindow)]) }

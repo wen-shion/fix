@@ -25,9 +25,10 @@ export const FALLBACK_MENU_BAR_ITEMS = [
   { id: "kiroBonus", label: "Kiro Bonus Limit", shortLabel: "Kr Bn", category: "limits" },
   { id: "copilotPremium", label: "Copilot Premium Limit", shortLabel: "Co Prem", category: "limits" },
   { id: "copilotChat", label: "Copilot Chat Limit", shortLabel: "Co Chat", category: "limits" },
-  { id: "antigravityClaude", label: "Antigravity Claude Limit", shortLabel: "Ag Cl", category: "limits" },
-  { id: "antigravityGPro", label: "Antigravity Gemini Pro Limit", shortLabel: "Ag GPro", category: "limits" },
-  { id: "antigravityFlash", label: "Antigravity Flash Limit", shortLabel: "Ag Fl", category: "limits" },
+  { id: "antigravityClaudeWeekly", label: "Antigravity Claude 7d Limit", shortLabel: "Ag Cl 7d", category: "limits" },
+  { id: "antigravityClaude5h", label: "Antigravity Claude 5h Limit", shortLabel: "Ag Cl 5h", category: "limits" },
+  { id: "antigravityGeminiWeekly", label: "Antigravity Gemini 7d Limit", shortLabel: "Ag Gm 7d", category: "limits" },
+  { id: "antigravityGemini5h", label: "Antigravity Gemini 5h Limit", shortLabel: "Ag Gm 5h", category: "limits" },
 ];
 
 export function normalizeMenuBarItems(ids, availableItems = FALLBACK_MENU_BAR_ITEMS, maxItems = 2) {

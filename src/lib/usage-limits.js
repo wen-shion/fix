@@ -1025,8 +1025,18 @@ function normalizeGeminiQuotaResponse({ buckets, email, tier }) {
 
 async function fetchGeminiLimits({ home, env, fetchImpl = fetch, commandRunner } = {}) {
   const settings = loadGeminiSettings({ home, env });
+  const credentials = loadGeminiCredentials({ home, env });
+  // Gemini is "configured" only if there are real OAuth credentials OR the
+  // gemini CLI is installed. A bare ~/.gemini/settings.json is not enough:
+  // sibling products (Antigravity) also live under ~/.gemini and would
+  // otherwise surface a spurious "Not logged in to Gemini" card. Do NOT
+  // require the binary when credentials exist — authenticated users on a
+  // minimal launchd PATH have no `gemini` on PATH (issue #224).
+  if (!credentials && !(await isBinaryAvailable("gemini", { commandRunner }))) {
+    return { configured: false };
+  }
   const selectedType = settings?.security?.auth?.selectedType ?? null;
-  if (!settings && !loadGeminiCredentials({ home, env })) {
+  if (!settings && !credentials) {
     return { configured: false };
   }
   if (selectedType === "api-key") {
@@ -1036,7 +1046,7 @@ async function fetchGeminiLimits({ home, env, fetchImpl = fetch, commandRunner }
     return { configured: true, error: "Gemini Vertex AI auth not supported. Use Google account (OAuth) instead." };
   }
 
-  const creds = loadGeminiCredentials({ home, env });
+  const creds = credentials;
   if (!creds?.access_token) {
     return { configured: true, error: "Not logged in to Gemini. Run 'gemini' in Terminal to authenticate." };
   }
@@ -1612,15 +1622,38 @@ function parseProcessLine(line) {
   };
 }
 
+function firstCommandToken(command) {
+  const trimmed = String(command || "").trimStart();
+  const quote = trimmed[0];
+  if (quote === '"' || quote === "'") {
+    const end = trimmed.indexOf(quote, 1);
+    return end >= 0 ? trimmed.slice(1, end) : trimmed.slice(1);
+  }
+  return trimmed.split(/\s+/, 1)[0] || "";
+}
+
 function isAntigravityCommandLine(command) {
-  const lower = String(command || "").toLowerCase();
-  return lower.includes("language_server")
-    && (
-      (lower.includes("--app_data_dir") && lower.includes("antigravity"))
-      || lower.includes("/antigravity/")
-      || lower.includes("\\antigravity\\")
-      || lower.includes("--override_ide_name antigravity")
-    );
+  const raw = String(command || "");
+  const lower = raw.toLowerCase();
+  const executable = firstCommandToken(raw).split(/[\\/]/).pop() || "";
+
+  // The agy CLI binary itself runs as a server with Connect-RPC endpoints.
+  // Match only the executable token's basename so absolute paths work without
+  // treating arbitrary arguments like `vim /tmp/agy` as an Antigravity server.
+  if (/^agy(?:\.exe)?$/i.test(executable)) return true;
+
+  // IDE language_server — only return true when accompanied by Antigravity-specific
+  // markers so sibling Codeium products (Windsurf, etc.) are not misidentified.
+  const hasLangServerBinary = /^language_server(?:_[a-z0-9]+)*(?:\.exe)?$/i.test(executable);
+
+  const hasAntigravityMarker =
+    (lower.includes("--app_data_dir") && lower.includes("antigravity")) ||
+    lower.includes("/antigravity/") ||
+    lower.includes("/antigravity.app/") ||
+    lower.includes("\\antigravity\\") ||
+    /--override_ide_name(?:=|\s+)["']?antigravity\b/i.test(raw);
+
+  return hasLangServerBinary && hasAntigravityMarker;
 }
 
 function extractCommandFlag(command, flag) {
@@ -1641,8 +1674,7 @@ async function detectAntigravityProcess({ commandRunner } = {}) {
     if (!parsed) continue;
     if (!isAntigravityCommandLine(parsed.command)) continue;
     sawProcess = true;
-    const csrfToken = extractCommandFlag(parsed.command, "--csrf_token");
-    if (!csrfToken) continue;
+    const csrfToken = extractCommandFlag(parsed.command, "--csrf_token") || null;
     const extensionPort = extractFirstNumber(extractCommandFlag(parsed.command, "--extension_server_port"));
     return {
       configured: true,
@@ -1677,7 +1709,7 @@ function isCacheWindowUsable(window, { cachedAtMs, nowMs } = {}) {
 }
 
 function hasAntigravityWindow(limits) {
-  return Boolean(limits?.primary_window || limits?.secondary_window || limits?.tertiary_window);
+  return Boolean(limits?.primary_window || limits?.secondary_window || limits?.tertiary_window || limits?.quaternary_window);
 }
 
 function normalizeAntigravityCachedLimits(raw, { nowMs = Date.now() } = {}) {
@@ -1694,6 +1726,7 @@ function normalizeAntigravityCachedLimits(raw, { nowMs = Date.now() } = {}) {
     primary_window: isCacheWindowUsable(raw?.primary_window, { cachedAtMs, nowMs }) ? raw.primary_window : null,
     secondary_window: isCacheWindowUsable(raw?.secondary_window, { cachedAtMs, nowMs }) ? raw.secondary_window : null,
     tertiary_window: isCacheWindowUsable(raw?.tertiary_window, { cachedAtMs, nowMs }) ? raw.tertiary_window : null,
+    quaternary_window: isCacheWindowUsable(raw?.quaternary_window, { cachedAtMs, nowMs }) ? raw.quaternary_window : null,
     cached: true,
     cached_at: raw.cached_at,
   };
@@ -1720,6 +1753,7 @@ function writeAntigravityLimitsCache(limits, { home, nowMs = Date.now() } = {}) 
       primary_window: limits.primary_window || null,
       secondary_window: limits.secondary_window || null,
       tertiary_window: limits.tertiary_window || null,
+      quaternary_window: limits.quaternary_window || null,
       cached_at: new Date(nowMs).toISOString(),
     },
   };
@@ -1935,6 +1969,14 @@ function requestLocalJson({
   const client = scheme === "https" ? https : http;
   return new Promise((resolve, reject) => {
     const rawBody = JSON.stringify(body);
+    const headers = {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(rawBody),
+      "Connect-Protocol-Version": "1",
+    };
+    if (csrfToken) {
+      headers["X-Codeium-Csrf-Token"] = csrfToken;
+    }
     const req = client.request(
       {
         hostname: "127.0.0.1",
@@ -1943,12 +1985,7 @@ function requestLocalJson({
         method: "POST",
         rejectUnauthorized: false,
         timeout: timeoutMs,
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(rawBody),
-          "Connect-Protocol-Version": "1",
-          "X-Codeium-Csrf-Token": csrfToken,
-        },
+        headers,
       },
       (res) => {
         let data = "";
@@ -2039,36 +2076,6 @@ function antigravityPriority(model) {
   return 0;
 }
 
-function chooseAntigravityModel(models, family) {
-  const candidates = models
-    .filter((model) => antigravityFamily(model) === family)
-    .map((model) => ({
-      model,
-      priority: antigravityPriority(model),
-      remaining:
-        typeof model.remaining_fraction === "number"
-          ? model.remaining_fraction
-          : Number.POSITIVE_INFINITY,
-    }))
-    .filter((entry) => entry.priority !== null);
-
-  if (!candidates.length) return null;
-  candidates.sort((a, b) => {
-    if (a.priority !== b.priority) return a.priority - b.priority;
-    return a.remaining - b.remaining;
-  });
-  return candidates[0].model;
-}
-
-function makeAntigravityWindow(model) {
-  if (!model) return null;
-  const remaining = typeof model.remaining_fraction === "number" ? model.remaining_fraction * 100 : 0;
-  return buildWindow({
-    usedPercent: 100 - remaining,
-    resetAt: model.reset_at,
-  });
-}
-
 function normalizeAntigravityResponse(body, { fallbackToConfigs = false } = {}) {
   if (!antigravityCodeIsOk(body?.code)) {
     throw new Error(`Antigravity API error: ${body?.code}`);
@@ -2078,21 +2085,40 @@ function normalizeAntigravityResponse(body, { fallbackToConfigs = false } = {}) 
   const configs = fallbackToConfigs
     ? body?.clientModelConfigs
     : userStatus?.cascadeModelConfigData?.clientModelConfigs;
-  const models = parseAntigravityModelConfigs(configs);
-  if (!models.length) {
+  const allModels = parseAntigravityModelConfigs(configs);
+  if (!allModels.length) {
     throw new Error("Could not parse Antigravity quota: no quota models available.");
   }
 
-  const primary = chooseAntigravityModel(models, "claude");
-  const secondary = chooseAntigravityModel(models, "gemini_pro");
-  const tertiary = chooseAntigravityModel(models, "gemini_flash");
-  const fallback = !primary && !secondary && !tertiary
-    ? [...models].sort((a, b) => {
-        const aRemaining = typeof a.remaining_fraction === "number" ? a.remaining_fraction : Number.POSITIVE_INFINITY;
-        const bRemaining = typeof b.remaining_fraction === "number" ? b.remaining_fraction : Number.POSITIVE_INFINITY;
-        return aRemaining - bRemaining;
-      })[0]
-    : null;
+  // Keep only chat models (skip autocomplete/lite/tab models)
+  const chatModels = allModels.filter((m) => antigravityPriority(m) !== null);
+  const models = chatModels.length ? chatModels : allModels;
+
+  // Group chat models and pick the most-used (lowest remaining → weekly quota)
+  // and least-used (highest remaining → 5h rolling quota) per family.
+  const claudeModels = models.filter((m) => antigravityFamily(m) === "claude");
+  const geminiModels = models.filter(
+    (m) => antigravityFamily(m) === "gemini_pro" || antigravityFamily(m) === "gemini_flash",
+  );
+
+  const pickMin = (list) => {
+    const sorted = [...list].filter((m) => typeof m.remaining_fraction === "number");
+    if (!sorted.length) return list[0] || null;
+    sorted.sort((a, b) => a.remaining_fraction - b.remaining_fraction);
+    return sorted[0];
+  };
+  const pickMax = (list) => {
+    const sorted = [...list].filter((m) => typeof m.remaining_fraction === "number");
+    if (!sorted.length) return list[list.length - 1] || null;
+    sorted.sort((a, b) => b.remaining_fraction - a.remaining_fraction);
+    return sorted[0];
+  };
+
+  const makeWindow = (model) => {
+    if (!model) return null;
+    const remaining = typeof model.remaining_fraction === "number" ? model.remaining_fraction * 100 : 0;
+    return buildWindow({ usedPercent: 100 - remaining, resetAt: model.reset_at });
+  };
 
   return {
     account_email: typeof userStatus?.email === "string" ? userStatus.email : null,
@@ -2103,16 +2129,64 @@ function normalizeAntigravityResponse(body, { fallbackToConfigs = false } = {}) 
       || userStatus?.planStatus?.planInfo?.planName
       || userStatus?.planStatus?.planInfo?.planShortName
       || null,
-    primary_window: makeAntigravityWindow(primary || fallback),
-    secondary_window: makeAntigravityWindow(secondary),
-    tertiary_window: makeAntigravityWindow(tertiary),
+    primary_window: makeWindow(claudeModels.length ? pickMin(claudeModels) : pickMin(models)),
+    secondary_window: makeWindow(claudeModels.length ? pickMax(claudeModels) : null),
+    tertiary_window: makeWindow(geminiModels.length ? pickMin(geminiModels) : pickMin(models)),
+    quaternary_window: makeWindow(geminiModels.length ? pickMax(geminiModels) : null),
   };
 }
 
-async function probeAntigravityPort(port, csrfToken, { timeoutMs, requestFn } = {}) {
+function normalizeAntigravityQuotaSummary(body) {
+  if (!antigravityCodeIsOk(body?.code)) {
+    throw new Error(`Antigravity API error: ${body?.code}`);
+  }
+
+  const groups = body?.response?.groups;
+  if (!Array.isArray(groups) || !groups.length) {
+    throw new Error("Could not parse Antigravity quota summary: no groups.");
+  }
+
+  // Map bucketId → window, regardless of which group they live in
+  const makeWindow = (remainingFraction, resetTime) => {
+    if (typeof remainingFraction !== "number") return null;
+    return buildWindow({ usedPercent: 100 - remainingFraction * 100, resetAt: resetTime || null });
+  };
+
+  // Collect all buckets into a flat bucketId-keyed map
+  const buckets = {};
+  for (const group of groups) {
+    if (!Array.isArray(group.buckets)) continue;
+    for (const b of group.buckets) {
+      buckets[b.bucketId] = b;
+    }
+  }
+
+  const windows = {
+    primary_window: makeWindow(buckets["3p-weekly"]?.remainingFraction, buckets["3p-weekly"]?.resetTime),
+    secondary_window: makeWindow(buckets["3p-5h"]?.remainingFraction, buckets["3p-5h"]?.resetTime),
+    tertiary_window: makeWindow(buckets["gemini-weekly"]?.remainingFraction, buckets["gemini-weekly"]?.resetTime),
+    quaternary_window: makeWindow(buckets["gemini-5h"]?.remainingFraction, buckets["gemini-5h"]?.resetTime),
+  };
+
+  // If the groups parsed but none of the known bucketIds matched (upstream
+  // renamed them), treat it as a parse failure so the caller falls back to
+  // GetUserStatus rather than rendering an empty, error-free card.
+  if (!windows.primary_window && !windows.secondary_window
+    && !windows.tertiary_window && !windows.quaternary_window) {
+    throw new Error("Could not parse Antigravity quota summary: no known buckets matched.");
+  }
+
+  return {
+    account_email: null, // quota summary doesn't include email
+    account_plan: null,  // quota summary doesn't include plan info
+    ...windows,
+  };
+}
+
+async function probeAntigravityPort(port, csrfToken, { timeoutMs, requestFn, scheme = "https" } = {}) {
   try {
     await requestLocalJson({
-      scheme: "https",
+      scheme,
       port,
       path: "/exa.language_server_pb.LanguageServerService/GetUnleashData",
       body: antigravityUnleashBody(),
@@ -2126,15 +2200,19 @@ async function probeAntigravityPort(port, csrfToken, { timeoutMs, requestFn } = 
   }
 }
 
-async function fetchAntigravityLimits({ home, commandRunner, requestFn, timeoutMs = 8000, nowMs = Date.now() } = {}) {
-  const processInfo = await detectAntigravityProcess({ commandRunner });
-  if (!processInfo.configured) {
-    return readAntigravityLimitsCache({ home, nowMs }) || { configured: false };
-  }
-  if (processInfo.error) {
-    return { configured: true, error: processInfo.error };
-  }
+function hasAntigravityInstallEvidence({ home } = {}) {
+  const geminiHome = path.join(home || os.homedir(), ".gemini");
+  return ["antigravity", "antigravity-ide", "antigravity-cli"]
+    .some((name) => {
+      try {
+        return fs.statSync(path.join(geminiHome, name)).isDirectory();
+      } catch {
+        return false;
+      }
+    });
+}
 
+async function fetchAntigravityLimits({ home, commandRunner, requestFn, fetchImpl = fetch, timeoutMs = 8000, nowMs = Date.now() } = {}) {
   const finalize = (payload, normalizeOptions) => {
     const result = {
       configured: true,
@@ -2145,13 +2223,46 @@ async function fetchAntigravityLimits({ home, commandRunner, requestFn, timeoutM
     return result;
   };
 
+  const finalizeQuotaSummary = (payload) => {
+    const result = {
+      configured: true,
+      error: null,
+      ...normalizeAntigravityQuotaSummary(payload),
+    };
+    writeAntigravityLimitsCache(result, { home, nowMs });
+    return result;
+  };
+
   try {
+    const processInfo = await detectAntigravityProcess({ commandRunner });
+    if (!processInfo.configured) {
+      const cached = readAntigravityLimitsCache({ home, nowMs });
+      if (cached) return cached;
+      // No install evidence → user likely doesn't have Antigravity at all.
+      // Return configured:false so the card stays neutral (like other providers).
+      if (!hasAntigravityInstallEvidence({ home })) {
+        return { configured: false };
+      }
+      return { configured: true, error: "Antigravity IDE is not running. Launch Antigravity to see usage limits." };
+    }
+    if (processInfo.error) {
+      return { configured: true, error: processInfo.error };
+    }
     const ports = await listAntigravityPorts(processInfo.pid, { commandRunner });
     let workingPort = null;
+    let workingScheme = "https";
     for (const port of ports) {
       if (await probeAntigravityPort(port, processInfo.csrfToken, { timeoutMs, requestFn })) {
         workingPort = port;
         break;
+      }
+      // agy CLI serves both HTTPS and HTTP; no CSRF needed
+      if (!processInfo.csrfToken) {
+        if (await probeAntigravityPort(port, null, { timeoutMs, requestFn, scheme: "http" })) {
+          workingPort = port;
+          workingScheme = "http";
+          break;
+        }
       }
     }
     if (!workingPort) {
@@ -2159,8 +2270,23 @@ async function fetchAntigravityLimits({ home, commandRunner, requestFn, timeoutM
     }
 
     try {
+      const quotaSummary = await requestLocalJson({
+        scheme: workingScheme,
+        port: workingPort,
+        path: "/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary",
+        body: antigravityDefaultBody(),
+        csrfToken: processInfo.csrfToken,
+        timeoutMs,
+        requestFn,
+      });
+      return finalizeQuotaSummary(quotaSummary);
+    } catch (_quotaError) {
+      // quota summary not available (IDE servers return 404) → fall back to GetUserStatus
+    }
+
+    try {
       const userStatus = await requestLocalJson({
-        scheme: "https",
+        scheme: workingScheme,
         port: workingPort,
         path: "/exa.language_server_pb.LanguageServerService/GetUserStatus",
         body: antigravityDefaultBody(),
@@ -2174,8 +2300,12 @@ async function fetchAntigravityLimits({ home, commandRunner, requestFn, timeoutM
         Number.isFinite(processInfo.extensionPort) && processInfo.extensionPort > 0
           ? processInfo.extensionPort
           : workingPort;
+      // agy has no extension server port; try HTTP on the same port
+      const fallbackScheme = !processInfo.csrfToken && fallbackPort === workingPort
+        ? (workingScheme === "https" ? "http" : "https")
+        : (fallbackPort === workingPort ? "https" : "http");
       const modelConfigs = await requestLocalJson({
-        scheme: fallbackPort === workingPort ? "https" : "http",
+        scheme: fallbackScheme,
         port: fallbackPort,
         path: "/exa.language_server_pb.LanguageServerService/GetCommandModelConfigs",
         body: antigravityDefaultBody(),
@@ -2188,6 +2318,11 @@ async function fetchAntigravityLimits({ home, commandRunner, requestFn, timeoutM
   } catch (error) {
     const cached = readAntigravityLimitsCache({ home, nowMs });
     if (cached) return cached;
+    // If there's no install evidence, this error is likely from a system that
+    // never had Antigravity — return neutral state like other providers.
+    if (!hasAntigravityInstallEvidence({ home })) {
+      return { configured: false };
+    }
     const message = error?.message === "timeout"
       ? "Antigravity quota request timed out."
       : error?.message || "Unknown error";
@@ -2335,7 +2470,7 @@ async function fetchUsageLimitsUncached({
     withProviderTimeout(fetchGeminiLimits({ home, env, fetchImpl: providerFetch, commandRunner }), "Gemini", providerTimeoutMs)
       .catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
     fetchKiroLimits({ commandRunner, now }),
-    fetchAntigravityLimits({ home, commandRunner, requestFn, nowMs }),
+    fetchAntigravityLimits({ home, commandRunner, requestFn, fetchImpl: providerFetch, nowMs }),
     withProviderTimeout(fetchCopilotLimits({ home, env, fetchImpl: providerFetch, platform, securityRunner }), "GitHub Copilot", providerTimeoutMs)
       .catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
     withProviderTimeout(fetchGrokLimits({ home, env, fetchImpl: providerFetch }), "Grok Build", providerTimeoutMs)

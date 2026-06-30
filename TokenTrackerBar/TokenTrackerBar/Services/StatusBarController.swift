@@ -323,12 +323,14 @@ final class StatusBarController: NSObject {
                 return genericLimitValue(id: id, metric: metric, configured: viewModel.usageLimits?.copilot?.configured, error: viewModel.usageLimits?.copilot?.error, window: viewModel.usageLimits?.copilot?.primaryWindow)
             case .copilotChat:
                 return genericLimitValue(id: id, metric: metric, configured: viewModel.usageLimits?.copilot?.configured, error: viewModel.usageLimits?.copilot?.error, window: viewModel.usageLimits?.copilot?.secondaryWindow)
-            case .antigravityClaude:
+            case .antigravityClaudeWeekly:
                 return genericLimitValue(id: id, metric: metric, configured: viewModel.usageLimits?.antigravity.configured, error: viewModel.usageLimits?.antigravity.error, window: viewModel.usageLimits?.antigravity.primaryWindow)
-            case .antigravityGPro:
+            case .antigravityClaude5h:
                 return genericLimitValue(id: id, metric: metric, configured: viewModel.usageLimits?.antigravity.configured, error: viewModel.usageLimits?.antigravity.error, window: viewModel.usageLimits?.antigravity.secondaryWindow)
-            case .antigravityFlash:
+            case .antigravityGeminiWeekly:
                 return genericLimitValue(id: id, metric: metric, configured: viewModel.usageLimits?.antigravity.configured, error: viewModel.usageLimits?.antigravity.error, window: viewModel.usageLimits?.antigravity.tertiaryWindow)
+            case .antigravityGemini5h:
+                return genericLimitValue(id: id, metric: metric, configured: viewModel.usageLimits?.antigravity.configured, error: viewModel.usageLimits?.antigravity.error, window: viewModel.usageLimits?.antigravity.quaternaryWindow)
             case .zcodeGlm52:
                 return genericLimitValue(id: id, metric: metric, configured: viewModel.usageLimits?.zcode?.configured, error: viewModel.usageLimits?.zcode?.error, window: viewModel.usageLimits?.zcode?.primaryWindow)
             case .zcodeGlm5Turbo:

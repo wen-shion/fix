@@ -7895,6 +7895,100 @@ test("parseAntigravityIncremental normalizes non-Flash model settings without de
   }
 });
 
+test("parseAntigravityIncremental falls back to settings.json model", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-antigravity-settings-"));
+  try {
+    // Path: …/antigravity-cli/brain/<uuid>/.system_generated/logs/transcript.jsonl
+    // readAntigravityDefaultModel walks 5 levels up to antigravity-cli/ for settings.json
+    const traceDir = path.join(tmp, "antigravity-cli", "brain", "session-id", ".system_generated", "logs");
+    await fs.mkdir(traceDir, { recursive: true });
+    const transcriptPath = path.join(traceDir, "transcript.jsonl");
+    const queuePath = path.join(tmp, "queue.jsonl");
+
+    // Write settings.json at the variant root (5 levels up from transcript)
+    await fs.writeFile(
+      path.join(tmp, "antigravity-cli", "settings.json"),
+      JSON.stringify({ model: "Claude Sonnet 4" }),
+    );
+
+    // Transcript with no model-selection event — must fall back to settings.json
+    const cursors = { version: 1, files: {}, updatedAt: null };
+    await fs.writeFile(
+      transcriptPath,
+      [
+        JSON.stringify({
+          type: "USER_INPUT",
+          created_at: "2026-04-05T14:00:00.000Z",
+          content: "a regular prompt",
+        }),
+        JSON.stringify({
+          type: "PLANNER_RESPONSE",
+          created_at: "2026-04-05T14:02:00.000Z",
+          content: "the answer",
+        }),
+      ].join("\n"),
+    );
+
+    await parseAntigravityIncremental({
+      sessionFiles: [transcriptPath],
+      cursors,
+      queuePath,
+    });
+
+    const queued = await readJsonLines(queuePath);
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].model, "claude-sonnet-4");
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+for (const eventType of ["USER_INPUT", "USER_SETTINGS_CHANGE"]) {
+  test(`parseAntigravityIncremental transcript model change overrides settings.json fallback (${eventType})`, async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-antigravity-settings-ovr-"));
+    try {
+      const traceDir = path.join(tmp, "antigravity-cli", "brain", "session-id", ".system_generated", "logs");
+      await fs.mkdir(traceDir, { recursive: true });
+      const transcriptPath = path.join(traceDir, "transcript.jsonl");
+      const queuePath = path.join(tmp, "queue.jsonl");
+
+      await fs.writeFile(
+        path.join(tmp, "antigravity-cli", "settings.json"),
+        JSON.stringify({ model: "Claude Sonnet 4" }),
+      );
+
+      const cursors = { version: 1, files: {}, updatedAt: null };
+      await fs.writeFile(
+        transcriptPath,
+        [
+          JSON.stringify({
+            type: eventType,
+            created_at: "2026-04-05T14:00:00.000Z",
+            content: "changed setting `Model Selection` from Auto to Claude Haiku 4.6 (Thinking).",
+          }),
+          JSON.stringify({
+            type: "PLANNER_RESPONSE",
+            created_at: "2026-04-05T14:02:00.000Z",
+            content: "answer",
+          }),
+        ].join("\n"),
+      );
+
+      await parseAntigravityIncremental({
+        sessionFiles: [transcriptPath],
+        cursors,
+        queuePath,
+      });
+
+      const queued = await readJsonLines(queuePath);
+      assert.equal(queued.length, 1);
+      assert.equal(queued[0].model, "claude-haiku-4.6");
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+}
+
 // ── Kimi Code official (@moonshot-ai/kimi-code) ──────────────────────────────
 
 test("parseKimiCodeIncremental reads step.end events with Anthropic-style usage", async () => {
