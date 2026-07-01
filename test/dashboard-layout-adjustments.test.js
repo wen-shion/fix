@@ -40,27 +40,27 @@ function readFile(filePath) {
 
 test("DashboardPage places TrendMonitor and heatmap in left column", () => {
   const src = readFile(viewPath);
-  const leftStart = src.indexOf("lg:col-span-4");
-  const rightStart = src.indexOf("lg:col-span-8", leftStart + 1);
-  assert.ok(leftStart !== -1, "expected left column markup");
-  assert.ok(rightStart !== -1, "expected right column markup");
+  const leftRendererStart = src.indexOf("function renderLeftCard");
+  const rightRendererStart = src.indexOf("function renderRightCard", leftRendererStart + 1);
+  assert.ok(leftRendererStart !== -1, "expected left card renderer");
+  assert.ok(rightRendererStart !== -1, "expected right card renderer");
 
-  const leftColumn = src.slice(leftStart, rightStart);
-  const trendIndex = leftColumn.indexOf("<TrendMonitor");
-  const heatmapIndex = leftColumn.indexOf("{activityHeatmapBlock}");
+  const leftRenderer = src.slice(leftRendererStart, rightRendererStart);
+  const trendIndex = leftRenderer.indexOf("<TrendMonitor");
+  const heatmapIndex = leftRenderer.indexOf("{activityHeatmapBlock}");
   assert.ok(trendIndex !== -1, "expected TrendMonitor in left column");
   assert.ok(heatmapIndex !== -1, "expected heatmap block in left column");
 });
 
 test("DashboardPage right column contains UsageOverview", () => {
   const src = readFile(viewPath);
-  const leftStart = src.indexOf("lg:col-span-4");
-  const rightStart = src.indexOf("lg:col-span-8", leftStart + 1);
-  assert.ok(leftStart !== -1, "expected left column markup");
-  assert.ok(rightStart !== -1, "expected right column markup");
+  const rightRendererStart = src.indexOf("function renderRightCard");
+  const sortableRendererStart = src.indexOf("function renderSortableColumn", rightRendererStart + 1);
+  assert.ok(rightRendererStart !== -1, "expected right card renderer");
+  assert.ok(sortableRendererStart !== -1, "expected sortable column renderer");
 
-  const rightColumn = src.slice(rightStart);
-  assert.ok(rightColumn.includes("<UsageOverview"), "expected UsageOverview in right column");
+  const rightRenderer = src.slice(rightRendererStart, sortableRendererStart);
+  assert.ok(rightRenderer.includes("<UsageOverview"), "expected UsageOverview in right column");
 });
 
 test("ProjectUsagePanel lays out cards in responsive grid", () => {
@@ -129,8 +129,24 @@ test("DashboardPage wires install panel gating through helper", () => {
     "expected helper to hide card for active device token",
   );
   assert.ok(
-    viewSrc.includes("shouldShowInstall ? ("),
+    viewSrc.includes("installCopy: shouldShowInstall"),
     "expected install panel to use shouldShowInstall",
+  );
+  assert.ok(viewSrc.includes('case "installCopy"'), "expected install panel card renderer");
+});
+
+test("DashboardView does not prune async quality-per-dollar while loading", () => {
+  const src = readFile(viewPath);
+  assert.match(
+    src,
+    /EMPTY_PRUNABLE_CARD_IDS\s*=\s*new Set\(\[\s*"macAppBanner",\s*"widgetOnboarding"\s*\]\)/,
+    "expected only permanently dismissible cards to be pruned when empty",
+  );
+  assert.ok(src.includes("if (!EMPTY_PRUNABLE_CARD_IDS.has(id)) return"));
+  assert.doesNotMatch(
+    src,
+    /EMPTY_PRUNABLE_CARD_IDS\s*=\s*new Set\([^)]*"qualityPerDollar"/,
+    "quality-per-dollar can be empty while async outcomes data loads",
   );
 });
 

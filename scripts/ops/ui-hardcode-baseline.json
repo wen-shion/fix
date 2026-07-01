@@ -1,13 +1,13 @@
 {
-  "generatedAt": "2026-07-01T03:11:40.708Z",
+  "generatedAt": "2026-07-01T11:53:46.041Z",
   "root": "dashboard/src",
   "rules": {
     "colors": "hex/rgb(a) literals",
     "rawText": "JSX text nodes containing letters or digits"
   },
   "totals": {
-    "colors": 271,
-    "rawText": 169
+    "colors": 275,
+    "rawText": 168
   },
   "files": {
     "dashboard/src/components/InsforgeUserHeaderControls.jsx": {
@@ -63,11 +63,6 @@
       "rawTextTokens": [
         "setIsOpen(false), []); return ("
       ]
-    },
-    "dashboard/src/pages/DashboardPage.jsx": {
-      "colors": 2,
-      "rawText": 0,
-      "rawTextTokens": []
     },
     "dashboard/src/pages/DevicePage.jsx": {
       "colors": 0,
@@ -289,6 +284,11 @@
       "rawText": 0,
       "rawTextTokens": []
     },
+    "dashboard/src/ui/dashboard/components/SortableCard.jsx": {
+      "colors": 6,
+      "rawText": 0,
+      "rawTextTokens": []
+    },
     "dashboard/src/ui/dashboard/components/StatsPanel.jsx": {
       "colors": 0,
       "rawText": 2,
@@ -362,10 +362,8 @@
     },
     "dashboard/src/ui/dashboard/views/DashboardView.jsx": {
       "colors": 2,
-      "rawText": 1,
-      "rawTextTokens": [
-        "D_LEFT_BASE + STEP * leftIdx++; const D_DATA_DETAILS = D_LEFT_BASE + STEP * 5; // 留给右列底部 return ("
-      ]
+      "rawText": 0,
+      "rawTextTokens": []
     },
     "dashboard/src/ui/foundation/__tests__/LocaleProvider.test.jsx": {
       "colors": 0,

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAccountView } from "../contexts/AccountViewContext.jsx";
 import { useActivityHeatmap } from "../hooks/use-activity-heatmap.js";
+import { useDashboardCardOrder } from "../hooks/use-dashboard-card-order.js";
 import { useProjectUsageSummary } from "../hooks/use-project-usage-summary";
 import { useTrendData } from "../hooks/use-trend-data.js";
 import { useUsageData } from "../hooks/use-usage-data.js";
@@ -27,7 +28,7 @@ import { shouldShowInstallCard } from "../lib/install-status";
 import { getMockNow, isMockEnabled } from "../lib/mock-data";
 import { publishUsageLimitsPreloadState } from "../lib/dashboard-preload.js";
 import { buildFleetData, buildTopModels, resolveDisplayTokens } from "../lib/model-breakdown";
-import { safeWriteClipboard, safeWriteClipboardImage } from "../lib/safe-browser";
+import { safeWriteClipboard } from "../lib/safe-browser";
 import { isScreenshotModeEnabled } from "../lib/screenshot-mode";
 import {
   formatTimeZoneLabel,
@@ -53,6 +54,19 @@ import { useShareCardData } from "../ui/share/use-share-card-data";
 const PERIODS = ["day", "week", "month", "total", "custom"];
 const DETAILS_DATE_KEYS = new Set(["day", "hour", "month"]);
 const DETAILS_PAGED_PERIODS = new Set(["day", "total", "custom"]);
+
+// Default Overview card order — each column is dragged/persisted independently.
+const LEFT_CARD_ORDER_DEFAULTS = [
+  "macAppBanner",
+  "statsPanel",
+  "widgetOnboarding",
+  "installCopy",
+  "activityHeatmap",
+  "deviceUsage",
+  "trendMonitor",
+  "qualityPerDollar",
+];
+const RIGHT_CARD_ORDER_DEFAULTS = ["usageOverview", "dataDetails"];
 
 const SUMMARY_FORMAT_STORAGE_KEY = "tt.summaryFormat";
 
@@ -179,7 +193,6 @@ export function DashboardPage({
     return isScreenshotModeEnabled(window.location.search);
   }, []);
   const forceInstall = useMemo(() => isForceInstallEnabled(), []);
-  const [isCapturing, setIsCapturing] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const identityScrambleDurationMs = 2200;
   const [coreIndexCollapsed, setCoreIndexCollapsed] = useState(true);
@@ -1067,11 +1080,6 @@ export function DashboardPage({
   const coreIndexCollapseAria = copy("dashboard.core_index.collapse_aria");
   const coreIndexExpandAria = copy("dashboard.core_index.expand_aria");
   const allowBreakdownToggle = !screenshotMode;
-  const screenshotTitleLine1 = copy("dashboard.screenshot.title_line1");
-  const screenshotTitleLine2 = copy("dashboard.screenshot.title_line2");
-  const screenshotTwitterLabel = copy("dashboard.screenshot.twitter_label");
-  const screenshotTwitterButton = copy("dashboard.screenshot.twitter_button");
-  const screenshotTwitterHint = copy("dashboard.screenshot.twitter_hint");
   const placeholderShort = copy("shared.placeholder.short");
   const agentSummary = useMemo(() => {
     const sources = Array.isArray(modelBreakdown?.sources) ? modelBreakdown.sources : [];
@@ -1118,107 +1126,6 @@ export function DashboardPage({
     model_name: agentSummary.modelName,
     model_percent: agentSummary.modelPercent,
   });
-  const screenshotTwitterUrl = useMemo(() => {
-    if (typeof window === "undefined") return "";
-    const intentUrl = new URL("https://twitter.com/intent/tweet");
-    intentUrl.searchParams.set("text", screenshotTwitterText);
-    // Link to the sharer's own profile when signed in, so the tweet drives to
-    // their stats (and the embeddable badge) rather than the generic homepage.
-    const sharePath = auth?.userId ? `/u/${auth.userId}` : "/";
-    intentUrl.searchParams.set("url", `https://www.tokentracker.cc${sharePath}?ref=share`);
-    return intentUrl.toString();
-  }, [screenshotTwitterText, auth?.userId]);
-  const captureScreenshotBlob = useCallback(async () => {
-    if (typeof window === "undefined") return null;
-    const waitForHeatmapLatest = async () => {
-      const maxWaitMs = 2000;
-      const start = performance.now();
-      while (performance.now() - start < maxWaitMs) {
-        const el = document.querySelector("[data-heatmap-scroll='true']");
-        if (!el) return;
-        if (el.dataset.latestMonthReady === "true") return;
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-      }
-    };
-    const root = document.querySelector("#root") || document.body;
-    const docEl = document.documentElement;
-    const { scrollWidth, scrollHeight } = document.documentElement;
-    docEl?.classList.add("screenshot-capture");
-    document.body?.classList.add("screenshot-capture");
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    await waitForHeatmapLatest();
-    try {
-      const { toBlob, toPng } = await import("html-to-image");
-      const blob = await toBlob(root, {
-        backgroundColor: "#050505",
-        pixelRatio: 2,
-        cacheBust: true,
-        width: scrollWidth,
-        height: scrollHeight,
-        style: {
-          width: `${scrollWidth}px`,
-          height: `${scrollHeight}px`,
-        },
-        filter: (node) =>
-          !(node instanceof HTMLElement) || node.dataset?.screenshotExclude !== "true",
-      });
-      if (blob) return blob;
-      const dataUrl = await toPng(root, {
-        backgroundColor: "#050505",
-        pixelRatio: 2,
-        cacheBust: true,
-        width: scrollWidth,
-        height: scrollHeight,
-        style: {
-          width: `${scrollWidth}px`,
-          height: `${scrollHeight}px`,
-        },
-        filter: (node) =>
-          !(node instanceof HTMLElement) || node.dataset?.screenshotExclude !== "true",
-      });
-      if (!dataUrl) return null;
-      const response = await fetch(dataUrl);
-      return await response.blob();
-    } finally {
-      docEl?.classList.remove("screenshot-capture");
-      document.body?.classList.remove("screenshot-capture");
-    }
-  }, []);
-  const handleShareToX = useCallback(async () => {
-    if (typeof window === "undefined" || isCapturing) return;
-    setIsCapturing(true);
-    const userAgent = navigator?.userAgent || "";
-    const isIOS = /iP(hone|od|ad)/i.test(userAgent);
-    const isSafari =
-      /Safari/i.test(userAgent) && !/Chrome|Chromium|Edg|OPR|CriOS|FxiOS/i.test(userAgent);
-    const canCopyImage =
-      typeof navigator !== "undefined" &&
-      Boolean(navigator.clipboard?.write) &&
-      typeof window !== "undefined" &&
-      Boolean(window.ClipboardItem);
-    const allowBypassClipboard = !canCopyImage || isIOS || isSafari;
-    let copied = allowBypassClipboard;
-    try {
-      const blob = await captureScreenshotBlob();
-      if (blob && canCopyImage) {
-        if (typeof document !== "undefined" && !document.hasFocus()) {
-          window.focus?.();
-        }
-        copied = await safeWriteClipboardImage(blob);
-      }
-    } catch (error) {
-      console.error("Failed to capture screenshot", error);
-    } finally {
-      setIsCapturing(false);
-      if (!copied) {
-        console.warn("Failed to write screenshot to clipboard.");
-        return;
-      }
-      if (screenshotTwitterUrl) {
-        window.location.href = screenshotTwitterUrl;
-      }
-    }
-  }, [captureScreenshotBlob, isCapturing, screenshotTwitterUrl]);
   const periodsForDisplay = useMemo(() => (screenshotMode ? [] : PERIODS), [screenshotMode]);
 
   const metricsRows = useMemo(
@@ -1360,6 +1267,11 @@ export function DashboardPage({
   const requireAuthGate = !signedIn && !mockEnabled && !sessionSoftExpired && !isLocalMode;
   const showAuthGate = requireAuthGate && !publicMode;
 
+  const dashboardCardOrder = useDashboardCardOrder(
+    LEFT_CARD_ORDER_DEFAULTS,
+    RIGHT_CARD_ORDER_DEFAULTS,
+  );
+
   useEffect(() => {
     if (mainContentVisibleNotifiedRef.current) return;
     if (showExpiredGate || showAuthGate) return;
@@ -1376,8 +1288,6 @@ export function DashboardPage({
       screenshotMode={screenshotMode}
       showExpiredGate={showExpiredGate}
       showAuthGate={showAuthGate}
-      screenshotTitleLine1={screenshotTitleLine1}
-      screenshotTitleLine2={screenshotTitleLine2}
       identityDisplayName={identityDisplayName}
       identityStartDate={identityStartDate}
       activeDays={activeDays}
@@ -1408,11 +1318,6 @@ export function DashboardPage({
       period={period}
       trendTimeZoneLabel={trendTimeZoneLabel}
       activityHeatmapBlock={activityHeatmapBlock}
-      isCapturing={isCapturing}
-      handleShareToX={handleShareToX}
-      screenshotTwitterLabel={screenshotTwitterLabel}
-      screenshotTwitterButton={screenshotTwitterButton}
-      screenshotTwitterHint={screenshotTwitterHint}
       periodsForDisplay={periodsForDisplay}
       setSelectedPeriod={handlePeriodChange}
       customFrom={customFrom}
@@ -1476,6 +1381,12 @@ export function DashboardPage({
       selectedDevice={selectedDevice || ""}
       onDeviceChange={(v) => setSelectedDevice(v || null)}
       deviceUsageBlock={deviceUsageBlock}
+      leftCardOrder={dashboardCardOrder.left.order}
+      onLeftReorder={dashboardCardOrder.left.reorder}
+      rightCardOrder={dashboardCardOrder.right.order}
+      onRightReorder={dashboardCardOrder.right.reorder}
+      isLayoutCustomized={dashboardCardOrder.isCustomized}
+      onResetLayout={dashboardCardOrder.resetAll}
     />
     <ShareModal
       open={shareModalOpen}

@@ -1,11 +1,25 @@
-import React from "react";
+import React, { useCallback, useState } from "react";
 import { motion } from "motion/react";
-import { Shell, Card, Button } from "../../components";
+import { RotateCcw } from "lucide-react";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { Shell, Card } from "../../components";
 import { CostAnalysisModal } from "../components/CostAnalysisModal.jsx";
 import { DataDetails } from "../components/DataDetails.jsx";
 import { StatsPanel } from "../components/StatsPanel.jsx";
 import { UsageOverview } from "../components/UsageOverview.jsx";
 import { TrendMonitor } from "../components/TrendMonitor.jsx";
+import { SortableCard } from "../components/SortableCard.jsx";
 import { FadeIn } from "../../foundation/FadeIn.jsx";
 import { MacAppBanner } from "../components/MacAppBanner.jsx";
 import { WidgetOnboardingCard } from "../components/WidgetOnboardingCard.jsx";
@@ -19,6 +33,13 @@ import { AGENT_LOGOS } from "../../marketing/agent-logos.js";
 // Curated subset of the canonical agent list for the gate carousel.
 const GATE_LOGOS = AGENT_LOGOS.slice(0, 10);
 
+// Entrance stagger timing — computed from each column's *rendered* index so
+// the waterfall still looks right after a user drags cards into a new order.
+const STEP = 0.06;
+const D_LEFT_BASE = 0.11;
+const D_RIGHT_BASE = 0.05;
+const EMPTY_PRUNABLE_CARD_IDS = new Set(["macAppBanner", "widgetOnboarding"]);
+
 function FullPageGateLayout({ title, subtitle, desc, loginCard, copy }) {
   return (
     <div className="min-h-[85vh] w-full flex items-center justify-center text-oai-black dark:text-white relative overflow-hidden px-4 md:px-8 py-8 md:py-16 transition-colors duration-200 bg-[linear-gradient(to_right,#80808007_1px,transparent_1px),linear-gradient(to_bottom,#80808007_1px,transparent_1px)] bg-[size:40px_40px]">
@@ -26,18 +47,18 @@ function FullPageGateLayout({ title, subtitle, desc, loginCard, copy }) {
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(59,130,246,0.03),transparent_50%)] dark:bg-[radial-gradient(circle_at_50%_0%,rgba(99,102,241,0.05),transparent_50%)] pointer-events-none" />
 
       <div className="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-16 items-start relative z-10">
-        
+
         {/* 左侧品牌与价值 */}
         <div className="lg:col-span-7 flex flex-col justify-center space-y-8 text-left pr-0 lg:pr-6">
-          
+
           {/* Logo 区域：使用精致的圆角矩形，还原精致的 Mac 圆角方形外观，移除多余剪裁 */}
           <div className="flex items-center gap-2.5">
-            <img 
-              src="/app-icon.png" 
-              alt="" 
-              width={32} 
-              height={32} 
-              className="rounded-md shadow-md border border-oai-gray-200/50 dark:border-oai-gray-800 shadow-black/10 dark:shadow-black/30" 
+            <img
+              src="/app-icon.png"
+              alt=""
+              width={32}
+              height={32}
+              className="rounded-md shadow-md border border-oai-gray-200/50 dark:border-oai-gray-800 shadow-black/10 dark:shadow-black/30"
             />
             <span className="text-xl font-bold tracking-tight bg-gradient-to-r from-oai-black to-oai-gray-600 dark:from-white dark:to-oai-gray-400 bg-clip-text text-transparent font-oai">
               {copy("shared.app_name")}
@@ -91,8 +112,6 @@ export function DashboardView(props) {
     screenshotMode,
     showExpiredGate,
     showAuthGate,
-    screenshotTitleLine1,
-    screenshotTitleLine2,
     identityDisplayName,
     identityStartDate,
     activeDays,
@@ -119,10 +138,6 @@ export function DashboardView(props) {
     period,
     trendTimeZoneLabel,
     activityHeatmapBlock,
-    isCapturing,
-    handleShareToX,
-    screenshotTwitterButton,
-    screenshotTwitterHint,
     periodsForDisplay,
     setSelectedPeriod,
     customFrom,
@@ -173,19 +188,279 @@ export function DashboardView(props) {
     selectedDevice,
     onDeviceChange,
     deviceUsageBlock,
+    leftCardOrder,
+    onLeftReorder,
+    rightCardOrder,
+    onRightReorder,
+    isLayoutCustomized,
+    onResetLayout,
   } = props;
 
   // Header 和 Footer 已简化
   const header = null;
   const footer = null;
 
-  // 入场瀑布：右列主卡先到，左列依序跟进
-  const STEP = 0.06;
-  const D_USAGE_OVERVIEW = 0.05;
-  const D_LEFT_BASE = 0.11;
-  let leftIdx = 0;
-  const nextLeft = () => D_LEFT_BASE + STEP * leftIdx++;
-  const D_DATA_DETAILS = D_LEFT_BASE + STEP * 5; // 留给右列底部
+  // Cards that are permanently hidden after mount (dismissed native banners,
+  // widget onboarding) get dropped from sortable `items` entirely. Async cards
+  // such as QualityPerDollarCard must stay mounted while their data loads.
+  const [emptyCardIds, setEmptyCardIds] = useState(() => new Set());
+  const handleCardEmptyChange = useCallback((id, isEmpty) => {
+    if (!EMPTY_PRUNABLE_CARD_IDS.has(id)) return;
+    setEmptyCardIds((prev) => {
+      if (prev.has(id) === isEmpty) return prev;
+      const next = new Set(prev);
+      if (isEmpty) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+
+  const leftVisible = {
+    macAppBanner: isLocalMode,
+    statsPanel: true,
+    widgetOnboarding: isLocalMode,
+    installCopy: shouldShowInstall,
+    activityHeatmap: Boolean(activityHeatmapBlock),
+    deviceUsage: Boolean(deviceUsageBlock),
+    trendMonitor: !screenshotMode,
+    qualityPerDollar: !screenshotMode,
+  };
+  const visibleLeftOrder = (leftCardOrder || []).filter(
+    (id) => leftVisible[id] && !emptyCardIds.has(id),
+  );
+
+  const rightVisible = {
+    usageOverview: true,
+    dataDetails: !screenshotMode,
+  };
+  const visibleRightOrder = (rightCardOrder || []).filter(
+    (id) => rightVisible[id] && !emptyCardIds.has(id),
+  );
+
+  function renderLeftCard(id, delay) {
+    switch (id) {
+      case "macAppBanner": {
+        return (
+          <MacAppBanner
+            todayTokens={summaryTotalTokensRaw}
+            isSyncing={usageLoadingState}
+            enterDelay={delay}
+          />
+        );
+      }
+      case "statsPanel": {
+        return (
+          <FadeIn delay={delay}>
+            <StatsPanel
+              title={copy("dashboard.identity.title")}
+              subtitle={copy("dashboard.identity.subtitle")}
+              period={period}
+              rankLabel={identityStartDate ?? copy("identity_card.rank_placeholder")}
+              streakDays={activeDays}
+              subscriptions={identitySubscriptions}
+              periodConversations={summaryConversationsValue}
+              rolling={rollingUsage}
+              topModels={topModels}
+            />
+          </FadeIn>
+        );
+      }
+      case "widgetOnboarding": {
+        return <WidgetOnboardingCard enterDelay={delay} />;
+      }
+      case "installCopy": {
+        return (
+          <FadeIn delay={delay}>
+            <div className="rounded-xl border border-oai-gray-200 dark:border-oai-gray-800 bg-white dark:bg-oai-gray-900 p-3">
+              <div className="text-xs text-oai-gray-500 dark:text-oai-gray-300 mb-1.5">{installPrompt}</div>
+              <motion.button
+                onClick={handleCopyInstall}
+                whileHover={{ scale: 1.01 }}
+                whileTap={{ scale: 0.99 }}
+                className="w-full flex items-center justify-between px-3 py-2 bg-oai-gray-50 dark:bg-oai-gray-800 hover:bg-oai-gray-100 dark:hover:bg-oai-gray-700 rounded-lg transition-colors"
+              >
+                <code className="text-xs font-mono text-oai-gray-700 dark:text-oai-gray-300">{installInitCmdDisplay}</code>
+                <motion.span
+                  key={installCopied ? "copied" : "copy"}
+                  initial={{ opacity: 0, y: -5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="text-xs text-oai-brand"
+                >
+                  {installCopied ? "Copied ✓" : "Copy"}
+                </motion.span>
+              </motion.button>
+            </div>
+          </FadeIn>
+        );
+      }
+      case "activityHeatmap": {
+        return <FadeIn delay={delay}>{activityHeatmapBlock}</FadeIn>;
+      }
+      case "deviceUsage": {
+        return <FadeIn delay={delay}>{deviceUsageBlock}</FadeIn>;
+      }
+      case "trendMonitor": {
+        return (
+          <FadeIn delay={delay}>
+            <TrendMonitor
+              rows={trendRowsForDisplay}
+              from={trendFromForDisplay}
+              to={trendToForDisplay}
+              period={period}
+              timeZoneLabel={trendTimeZoneLabel}
+              showTimeZoneLabel={false}
+              zoomConfig={trendZoomConfig}
+            />
+          </FadeIn>
+        );
+      }
+      case "qualityPerDollar": {
+        return (
+          <QualityPerDollarCard
+            from={usageFrom}
+            to={usageTo}
+            deviceId={selectedDevice}
+          />
+        );
+      }
+      default: {
+        return null;
+      }
+    }
+  }
+
+  function renderRightCard(id, delay) {
+    switch (id) {
+      case "usageOverview": {
+        return (
+          <FadeIn delay={delay}>
+            <UsageOverview
+              period={period}
+              periods={periodsForDisplay}
+              onPeriodChange={setSelectedPeriod}
+              summaryLabel={summaryLabel}
+              summaryValue={summaryValue}
+              summaryFullValue={summaryFullValue}
+              onToggleSummaryFormat={onToggleSummaryFormat}
+              summaryCostValue={summaryCostValue}
+              onCostInfo={costInfoEnabled ? openCostModal : null}
+              fleetData={fleetData}
+              onRefresh={screenshotMode ? null : refreshAll}
+              loading={usageLoadingState}
+              onOpenShare={screenshotMode ? null : onOpenShare}
+              customFrom={customFrom}
+              customTo={customTo}
+              onCustomRangeApply={onCustomRangeApply}
+              customRangeOpen={customRangeOpen}
+              onCustomRangeOpenChange={onCustomRangeOpenChange}
+              from={usageFrom}
+              to={usageTo}
+              deviceOptions={deviceOptions}
+              selectedDevice={selectedDevice}
+              onDeviceChange={onDeviceChange}
+            />
+          </FadeIn>
+        );
+      }
+      case "dataDetails": {
+        return (
+          <FadeIn delay={delay}>
+            <DataDetails
+              projectEntries={projectUsageEntries}
+              projectLimit={projectUsageLimit}
+              onProjectLimitChange={setProjectUsageLimit}
+              copy={copy}
+              hasDetailsActual={hasDetailsActual}
+              dailyEmptyPrefix={dailyEmptyPrefix}
+              installSyncCmd={installSyncCmd}
+              dailyEmptySuffix={dailyEmptySuffix}
+              detailsColumns={detailsColumns}
+              ariaSortFor={ariaSortFor}
+              toggleSort={toggleSort}
+              sortIconFor={sortIconFor}
+              pagedDetails={pagedDetails}
+              dailyBreakdownRows={dailyBreakdownRows}
+              dailyBreakdownColumns={dailyBreakdownColumns}
+              dailyBreakdownAriaSortFor={dailyBreakdownAriaSortFor}
+              dailyBreakdownSortIconFor={dailyBreakdownSortIconFor}
+              dailyBreakdownDateKey={dailyBreakdownDateKey}
+              detailsDateKey={detailsDateKey}
+              renderDetailDate={renderDetailDate}
+              renderDailyBreakdownDate={renderDailyBreakdownDate}
+              renderDetailCell={renderDetailCell}
+              DETAILS_PAGED_PERIODS={DETAILS_PAGED_PERIODS}
+              period={period}
+              detailsPageCount={detailsPageCount}
+              detailsPage={detailsPage}
+              setDetailsPage={setDetailsPage}
+            />
+          </FadeIn>
+        );
+      }
+      default: {
+        return null;
+      }
+    }
+  }
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  const handleLeftDragEnd = useCallback(
+    (event) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      onLeftReorder?.(String(active.id), String(over.id));
+    },
+    [onLeftReorder],
+  );
+
+  const handleRightDragEnd = useCallback(
+    (event) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      onRightReorder?.(String(active.id), String(over.id));
+    },
+    [onRightReorder],
+  );
+
+  function renderSortableColumn(order, renderCard, baseDelay, onDragEnd) {
+    if (screenshotMode) {
+      return (
+        <>
+          {order.map((id, i) => (
+            <React.Fragment key={id}>{renderCard(id, baseDelay + STEP * i)}</React.Fragment>
+          ))}
+        </>
+      );
+    }
+    return (
+      <DndContext sensors={sensors} onDragEnd={onDragEnd}>
+        <SortableContext items={order} strategy={verticalListSortingStrategy}>
+          {order.map((id, i) => (
+            <SortableCard key={id} id={id} onEmptyChange={handleCardEmptyChange}>
+              {renderCard(id, baseDelay + STEP * i)}
+            </SortableCard>
+          ))}
+        </SortableContext>
+      </DndContext>
+    );
+  }
+
+  const leftColumnContent = renderSortableColumn(
+    visibleLeftOrder,
+    renderLeftCard,
+    D_LEFT_BASE,
+    handleLeftDragEnd,
+  );
+  const rightColumnContent = renderSortableColumn(
+    visibleRightOrder,
+    renderRightCard,
+    D_RIGHT_BASE,
+    handleRightDragEnd,
+  );
 
   return (
     <>
@@ -230,186 +505,29 @@ export function DashboardView(props) {
           <DashboardSkeleton />
         )}
         {!showAuthGate && !showExpiredGate && !initialDashboardLoading && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+          <>
+            {!screenshotMode && isLayoutCustomized ? (
+              <div className="flex justify-end mb-2">
+                <button
+                  type="button"
+                  onClick={onResetLayout}
+                  className="inline-flex items-center gap-1.5 text-xs text-oai-gray-400 hover:text-oai-gray-600 dark:text-oai-gray-500 dark:hover:text-oai-gray-300 transition-colors"
+                >
+                  <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                  {copy("dashboard.overview.layout.reset")}
+                </button>
+              </div>
+            ) : null}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
               <div className="lg:col-span-4 flex flex-col gap-4 min-w-0 order-2 lg:order-1">
-                {screenshotMode ? (
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex flex-col gap-1">
-                      <span className="text-3xl md:text-4xl font-semibold text-oai-black dark:text-oai-white tracking-tight leading-none">
-                        {screenshotTitleLine1}
-                      </span>
-                      <span className="text-2xl md:text-3xl font-semibold text-oai-black dark:text-oai-white tracking-tight leading-none">
-                        {screenshotTitleLine2}
-                      </span>
-                    </div>
-                  </div>
-                ) : null}
-                {isLocalMode ? (
-                  <MacAppBanner
-                    todayTokens={summaryTotalTokensRaw}
-                    isSyncing={usageLoadingState}
-                    enterDelay={nextLeft()}
-                  />
-                ) : null}
-
-                <FadeIn delay={nextLeft()}>
-                  <StatsPanel
-                    title={copy("dashboard.identity.title")}
-                    subtitle={copy("dashboard.identity.subtitle")}
-                    period={period}
-                    rankLabel={identityStartDate ?? copy("identity_card.rank_placeholder")}
-                    streakDays={activeDays}
-                    subscriptions={identitySubscriptions}
-                    periodConversations={summaryConversationsValue}
-                    rolling={rollingUsage}
-                    topModels={topModels}
-                  />
-                </FadeIn>
-
-                {isLocalMode ? <WidgetOnboardingCard enterDelay={nextLeft()} /> : null}
-
-                {shouldShowInstall ? (
-                  <FadeIn delay={nextLeft()}>
-                    <div className="rounded-xl border border-oai-gray-200 dark:border-oai-gray-800 bg-white dark:bg-oai-gray-900 p-3">
-                      <div className="text-xs text-oai-gray-500 dark:text-oai-gray-300 mb-1.5">{installPrompt}</div>
-                      <motion.button
-                        onClick={handleCopyInstall}
-                        whileHover={{ scale: 1.01 }}
-                        whileTap={{ scale: 0.99 }}
-                        className="w-full flex items-center justify-between px-3 py-2 bg-oai-gray-50 dark:bg-oai-gray-800 hover:bg-oai-gray-100 dark:hover:bg-oai-gray-700 rounded-lg transition-colors"
-                      >
-                        <code className="text-xs font-mono text-oai-gray-700 dark:text-oai-gray-300">{installInitCmdDisplay}</code>
-                        <motion.span
-                          key={installCopied ? "copied" : "copy"}
-                          initial={{ opacity: 0, y: -5 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          className="text-xs text-oai-brand"
-                        >
-                          {installCopied ? "Copied ✓" : "Copy"}
-                        </motion.span>
-                      </motion.button>
-                    </div>
-                  </FadeIn>
-                ) : null}
-
-                {activityHeatmapBlock && (
-                  <FadeIn delay={nextLeft()}>
-                    {activityHeatmapBlock}
-                  </FadeIn>
-                )}
-
-                {deviceUsageBlock ? (
-                  <FadeIn delay={nextLeft()}>
-                    {deviceUsageBlock}
-                  </FadeIn>
-                ) : null}
-
-                {!screenshotMode ? (
-                  <FadeIn delay={nextLeft()}>
-                    <TrendMonitor
-                      rows={trendRowsForDisplay}
-                      from={trendFromForDisplay}
-                      to={trendToForDisplay}
-                      period={period}
-                      timeZoneLabel={trendTimeZoneLabel}
-                      showTimeZoneLabel={false}
-                      zoomConfig={trendZoomConfig}
-                    />
-                  </FadeIn>
-                ) : null}
-                {!screenshotMode ? (
-                  <QualityPerDollarCard
-                    from={usageFrom}
-                    to={usageTo}
-                    deviceId={selectedDevice}
-                  />
-                ) : null}
-                {screenshotMode ? (
-                  <div
-                    className="mt-4 flex flex-col items-center gap-2"
-                    data-screenshot-exclude="true"
-                    style={isCapturing ? { display: "none" } : undefined}
-                  >
-                    <Button
-                      type="button"
-                      onClick={handleShareToX}
-                      variant="primary"
-                      size="lg"
-                      disabled={isCapturing}
-                    >
-                      {screenshotTwitterButton}
-                    </Button>
-                    <span className="text-sm text-oai-gray-500 dark:text-oai-gray-300">
-                      {screenshotTwitterHint}
-                    </span>
-                  </div>
-                ) : null}
+                {leftColumnContent}
               </div>
 
               <div className="lg:col-span-8 flex flex-col gap-4 min-w-0 order-1 lg:order-2">
-                <FadeIn delay={D_USAGE_OVERVIEW}>
-                  <UsageOverview
-                    period={period}
-                    periods={periodsForDisplay}
-                    onPeriodChange={setSelectedPeriod}
-                    summaryLabel={summaryLabel}
-                    summaryValue={summaryValue}
-                    summaryFullValue={summaryFullValue}
-                    onToggleSummaryFormat={onToggleSummaryFormat}
-                    summaryCostValue={summaryCostValue}
-                    onCostInfo={costInfoEnabled ? openCostModal : null}
-                    fleetData={fleetData}
-                    onRefresh={screenshotMode ? null : refreshAll}
-                    loading={usageLoadingState}
-                    onOpenShare={screenshotMode ? null : onOpenShare}
-                    customFrom={customFrom}
-                    customTo={customTo}
-                    onCustomRangeApply={onCustomRangeApply}
-                    customRangeOpen={customRangeOpen}
-                    onCustomRangeOpenChange={onCustomRangeOpenChange}
-                    from={usageFrom}
-                    to={usageTo}
-                    deviceOptions={deviceOptions}
-                    selectedDevice={selectedDevice}
-                    onDeviceChange={onDeviceChange}
-                  />
-                </FadeIn>
-
-                {!screenshotMode ? (
-                  <FadeIn delay={D_DATA_DETAILS}>
-                    <DataDetails
-                      projectEntries={projectUsageEntries}
-                      projectLimit={projectUsageLimit}
-                      onProjectLimitChange={setProjectUsageLimit}
-                      copy={copy}
-                      hasDetailsActual={hasDetailsActual}
-                      dailyEmptyPrefix={dailyEmptyPrefix}
-                      installSyncCmd={installSyncCmd}
-                      dailyEmptySuffix={dailyEmptySuffix}
-                      detailsColumns={detailsColumns}
-                      ariaSortFor={ariaSortFor}
-                      toggleSort={toggleSort}
-                      sortIconFor={sortIconFor}
-                      pagedDetails={pagedDetails}
-                      dailyBreakdownRows={dailyBreakdownRows}
-                      dailyBreakdownColumns={dailyBreakdownColumns}
-                      dailyBreakdownAriaSortFor={dailyBreakdownAriaSortFor}
-                      dailyBreakdownSortIconFor={dailyBreakdownSortIconFor}
-                      dailyBreakdownDateKey={dailyBreakdownDateKey}
-                      detailsDateKey={detailsDateKey}
-                      renderDetailDate={renderDetailDate}
-                      renderDailyBreakdownDate={renderDailyBreakdownDate}
-                      renderDetailCell={renderDetailCell}
-                      DETAILS_PAGED_PERIODS={DETAILS_PAGED_PERIODS}
-                      period={period}
-                      detailsPageCount={detailsPageCount}
-                      detailsPage={detailsPage}
-                      setDetailsPage={setDetailsPage}
-                    />
-                  </FadeIn>
-                ) : null}
+                {rightColumnContent}
               </div>
-          </div>
+            </div>
+          </>
         )}
       </Shell>
       <CostAnalysisModal isOpen={costModalOpen} onClose={closeCostModal} fleetData={fleetData} />

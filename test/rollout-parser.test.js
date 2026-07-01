@@ -17,6 +17,9 @@ const {
   parseHermesIncremental,
   resolveHermesPath,
   resolveHermesDbPath,
+  parseWslListVerbose,
+  probeWslDistros,
+  discoverWslHermesHome,
   parseCopilotIncremental,
   parseKimiIncremental,
   parseCodebuddyIncremental,
@@ -3183,7 +3186,7 @@ test("parseClaudeIncremental aggregates usage into half-hour buckets", async () 
   }
 });
 
-test("parseClaudeIncremental still processes unchanged files when project state is enabled", async () => {
+test("parseClaudeIncremental skips unchanged files once project context is settled", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-claude-"));
   try {
     const claudePath = path.join(tmp, "agent-claude.jsonl");
@@ -3210,6 +3213,122 @@ test("parseClaudeIncremental still processes unchanged files when project state 
     });
     assert.equal(first.filesProcessed, 1);
 
+    // No cwd on the fixture line, so project context is confirmed absent —
+    // an idle re-run should now skip the file entirely instead of re-doing
+    // a doomed-to-fail project resolution on every sync.
+    const second = await parseClaudeIncremental({
+      projectFiles: [{ path: claudePath, source: "claude" }],
+      cursors,
+      queuePath,
+      projectQueuePath,
+    });
+    assert.equal(second.filesProcessed, 0);
+    assert.equal(second.eventsAggregated, 0);
+    assert.equal(second.bucketsQueued, 0);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("parseClaudeIncremental resolves project from content-embedded cwd, not the ~/.claude/projects storage path", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-claude-"));
+  try {
+    // Simulate the real ~/.claude/projects/<dash-encoded-cwd>/ storage layout:
+    // the file's own directory is NOT inside the real git checkout, so a
+    // directory-walk from the file path can never find a project. Only the
+    // "cwd" field logged inside the file's content points at the real repo.
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-repo-"));
+    await fs.mkdir(path.join(repoRoot, ".git"), { recursive: true });
+    await fs.writeFile(
+      path.join(repoRoot, ".git", "config"),
+      '[remote "origin"]\n\turl = https://github.com/acme/widgets.git\n',
+      "utf8",
+    );
+
+    const storageDir = path.join(tmp, "-some-unrelated-claude-storage-dir");
+    await fs.mkdir(storageDir, { recursive: true });
+    const claudePath = path.join(storageDir, "session.jsonl");
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const projectQueuePath = path.join(tmp, "project.queue.jsonl");
+    const cursors = { version: 1, files: {}, updatedAt: null };
+    const model = "claude-sonnet-4";
+
+    const lines = [
+      JSON.stringify({ type: "attachment", cwd: repoRoot, timestamp: "2025-12-25T01:00:00.000Z" }),
+      buildClaudeUsageLine({ ts: "2025-12-25T01:10:00.000Z", input: 100, output: 50, model }),
+    ];
+    await fs.writeFile(claudePath, lines.join("\n") + "\n", "utf8");
+
+    const res = await parseClaudeIncremental({
+      projectFiles: [{ path: claudePath, source: "claude" }],
+      cursors,
+      queuePath,
+      projectQueuePath,
+    });
+    assert.equal(res.filesProcessed, 1);
+
+    const projectRows = await readJsonLines(projectQueuePath);
+    assert.equal(projectRows.length, 1);
+    assert.equal(projectRows[0].project_key, "acme/widgets");
+
+    assert.equal(cursors.files[claudePath].claudeCwd, repoRoot);
+    assert.equal(cursors.files[claudePath].projectKey, "acme/widgets");
+
+    // A second, idle run must not re-walk the filesystem for project
+    // context — the cached git-config fingerprint is still fresh.
+    const again = await parseClaudeIncremental({
+      projectFiles: [{ path: claudePath, source: "claude" }],
+      cursors,
+      queuePath,
+      projectQueuePath,
+    });
+    assert.equal(again.filesProcessed, 0);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("parseClaudeIncremental retries cwd resolution when a growing file's cwd line lands after an earlier sync", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-claude-"));
+  try {
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-repo-"));
+    await fs.mkdir(path.join(repoRoot, ".git"), { recursive: true });
+    await fs.writeFile(
+      path.join(repoRoot, ".git", "config"),
+      '[remote "origin"]\n\turl = https://github.com/acme/late-cwd.git\n',
+      "utf8",
+    );
+
+    const storageDir = path.join(tmp, "-some-unrelated-claude-storage-dir");
+    await fs.mkdir(storageDir, { recursive: true });
+    const claudePath = path.join(storageDir, "session.jsonl");
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const projectQueuePath = path.join(tmp, "project.queue.jsonl");
+    const cursors = { version: 1, files: {}, updatedAt: null };
+    const model = "claude-sonnet-4";
+
+    // First sync catches the file before its cwd-bearing line lands — only a
+    // bare summary line exists so far, so cwd resolution comes up empty.
+    await fs.writeFile(
+      claudePath,
+      JSON.stringify({ type: "summary", sessionId: "s1" }) + "\n",
+      "utf8",
+    );
+    await parseClaudeIncremental({
+      projectFiles: [{ path: claudePath, source: "claude" }],
+      cursors,
+      queuePath,
+      projectQueuePath,
+    });
+    assert.equal(cursors.files[claudePath].claudeCwd, null);
+
+    // File grows: the cwd line lands, along with a usage line.
+    const lines = [
+      JSON.stringify({ type: "attachment", cwd: repoRoot, timestamp: "2025-12-25T01:00:00.000Z" }),
+      buildClaudeUsageLine({ ts: "2025-12-25T01:10:00.000Z", input: 100, output: 50, model }),
+    ];
+    await fs.appendFile(claudePath, lines.join("\n") + "\n", "utf8");
+
     const second = await parseClaudeIncremental({
       projectFiles: [{ path: claudePath, source: "claude" }],
       cursors,
@@ -3217,8 +3336,52 @@ test("parseClaudeIncremental still processes unchanged files when project state 
       projectQueuePath,
     });
     assert.equal(second.filesProcessed, 1);
-    assert.equal(second.eventsAggregated, 0);
-    assert.equal(second.bucketsQueued, 0);
+
+    const projectRows = await readJsonLines(projectQueuePath);
+    assert.equal(projectRows.length, 1);
+    assert.equal(projectRows[0].project_key, "acme/late-cwd");
+    assert.equal(cursors.files[claudePath].claudeCwd, repoRoot);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("parseClaudeIncremental skips re-walking git for an idle file whose cwd has no git checkout", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-claude-"));
+  try {
+    const nonRepoDir = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-norepo-"));
+    const storageDir = path.join(tmp, "-some-unrelated-claude-storage-dir");
+    await fs.mkdir(storageDir, { recursive: true });
+    const claudePath = path.join(storageDir, "session.jsonl");
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const projectQueuePath = path.join(tmp, "project.queue.jsonl");
+    const cursors = { version: 1, files: {}, updatedAt: null };
+    const model = "claude-sonnet-4";
+
+    const lines = [
+      JSON.stringify({ type: "attachment", cwd: nonRepoDir, timestamp: "2025-12-25T01:00:00.000Z" }),
+      buildClaudeUsageLine({ ts: "2025-12-25T01:10:00.000Z", input: 100, output: 50, model }),
+    ];
+    await fs.writeFile(claudePath, lines.join("\n") + "\n", "utf8");
+
+    const first = await parseClaudeIncremental({
+      projectFiles: [{ path: claudePath, source: "claude" }],
+      cursors,
+      queuePath,
+      projectQueuePath,
+    });
+    assert.equal(first.filesProcessed, 1);
+    assert.equal(cursors.files[claudePath].claudeCwd, nonRepoDir);
+    assert.deepEqual(cursors.files[claudePath].projectFileContext, { absent: true });
+
+    // Idle + already-confirmed-no-git-checkout must fully skip, not re-walk.
+    const second = await parseClaudeIncremental({
+      projectFiles: [{ path: claudePath, source: "claude" }],
+      cursors,
+      queuePath,
+      projectQueuePath,
+    });
+    assert.equal(second.filesProcessed, 0);
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
@@ -3961,9 +4124,11 @@ test("resolveHermesPath honors TOKENTRACKER_HERMES_HOME override", () => {
     path.join(override, "state.db"),
   );
   // Falls back to ~/.hermes when override is empty or absent.
-  const fallback = resolveHermesPath({ TOKENTRACKER_HERMES_HOME: "  " });
+  // Suppress the WSL probe so this assertion is deterministic on Windows (#87).
+  const noWsl = { runWsl: () => { throw new Error("no WSL"); } };
+  const fallback = resolveHermesPath({ TOKENTRACKER_HERMES_HOME: "  " }, noWsl);
   assert.equal(fallback, path.join(os.homedir(), ".hermes"));
-  assert.equal(resolveHermesPath({}), path.join(os.homedir(), ".hermes"));
+  assert.equal(resolveHermesPath({}, noWsl), path.join(os.homedir(), ".hermes"));
 });
 
 test("resolveHermesPath prefers %LOCALAPPDATA%\\hermes on Windows when present", async (t) => {
@@ -3978,20 +4143,101 @@ test("resolveHermesPath prefers %LOCALAPPDATA%\\hermes on Windows when present",
   });
 
   // LOCALAPPDATA points at a dir that does NOT contain `hermes` → fall back.
+  // Suppress WSL probe so fallback is deterministic on Windows (#87).
+  const noWsl = { runWsl: () => { throw new Error("no WSL"); } };
   assert.equal(
-    resolveHermesPath({ LOCALAPPDATA: tmp }),
+    resolveHermesPath({ LOCALAPPDATA: tmp }, noWsl),
     path.join(os.homedir(), ".hermes"),
   );
 
   // After we create LOCALAPPDATA\hermes the resolver should prefer it over ~/.hermes.
   const winNative = path.join(tmp, "hermes");
   await fs.mkdir(winNative, { recursive: true });
-  assert.equal(resolveHermesPath({ LOCALAPPDATA: tmp }), winNative);
+  assert.equal(resolveHermesPath({ LOCALAPPDATA: tmp }, noWsl), winNative);
 
   // Explicit TOKENTRACKER_HERMES_HOME still wins over LOCALAPPDATA auto-detect.
   assert.equal(
     resolveHermesPath({ LOCALAPPDATA: tmp, TOKENTRACKER_HERMES_HOME: "/custom/hermes" }),
     "/custom/hermes",
+  );
+});
+
+test("parseWslListVerbose parses distros, default marker and version column", () => {
+  const raw = "  NAME            STATE           VERSION\n" +
+    "* Ubuntu          Running         2\n" +
+    "  Debian-22.04    Stopped         1\n";
+  assert.deepEqual(parseWslListVerbose(raw), [
+    { name: "Ubuntu", version: 2, isDefault: true },
+    { name: "Debian-22.04", version: 1, isDefault: false },
+  ]);
+});
+
+test("parseWslListVerbose tolerates UTF-16 NUL/BOM noise and skips the header", () => {
+  // wsl.exe -l -v emits UTF-16LE; a mis-decode leaves a leading BOM and NUL
+  // bytes between characters. The parser strips both defensively.
+  const raw = "\uFEFF  NAME   STATE   VERSION\n* Ub\u0000untu Running 2\n";
+  assert.deepEqual(parseWslListVerbose(raw), [
+    { name: "Ubuntu", version: 2, isDefault: true },
+  ]);
+  assert.deepEqual(parseWslListVerbose(""), []);
+  assert.deepEqual(parseWslListVerbose(undefined), []);
+});
+
+test("probeWslDistros sorts the default distro first and is fail-safe", () => {
+  const raw = "  NAME    STATE    VERSION\n  Debian  Stopped  1\n* Ubuntu  Running  2\n";
+  assert.deepEqual(probeWslDistros({ runWsl: () => raw }), [
+    { name: "Ubuntu", version: 2, isDefault: true },
+    { name: "Debian", version: 1, isDefault: false },
+  ]);
+  // A throwing wsl.exe (not installed / no distros) yields an empty list.
+  assert.deepEqual(
+    probeWslDistros({ runWsl: () => { throw new Error("wsl not found"); } }),
+    [],
+  );
+});
+
+test("discoverWslHermesHome resolves ~/.hermes via the right UNC alias per distro", () => {
+  const list = "  NAME    STATE    VERSION\n* Ubuntu  Running  2\n  Legacy  Running  1\n";
+  // Linux usernames differ from %USERNAME% — whoami is asked per distro (#87).
+  const users = { Ubuntu: "alice\n", Legacy: "bob\n" };
+  const runWsl = (args) => (args[0] === "-l" ? list : users[args[1]]);
+
+  // WSL2 distro found via the legacy \\wsl$\ alias (tried first for v2).
+  const tried = [];
+  const hit = discoverWslHermesHome({
+    runWsl,
+    existsSync: (p) => {
+      tried.push(p);
+      return p === "\\\\wsl$\\Ubuntu\\home\\alice\\.hermes";
+    },
+  });
+  assert.equal(hit, "\\\\wsl$\\Ubuntu\\home\\alice\\.hermes");
+  assert.equal(tried[0], "\\\\wsl$\\Ubuntu\\home\\alice\\.hermes");
+
+  // WSL1 distro: \\wsl.localhost\ is tried before \\wsl$\.
+  const tried1 = [];
+  const hit1 = discoverWslHermesHome({
+    runWsl,
+    existsSync: (p) => {
+      tried1.push(p);
+      return p === "\\\\wsl.localhost\\Legacy\\home\\bob\\.hermes";
+    },
+  });
+  assert.equal(hit1, "\\\\wsl.localhost\\Legacy\\home\\bob\\.hermes");
+  // Ubuntu (default) probed first, both its roots miss, then Legacy via localhost.
+  assert.equal(tried1[tried1.length - 1], "\\\\wsl.localhost\\Legacy\\home\\bob\\.hermes");
+  assert.ok(tried1.indexOf("\\\\wsl.localhost\\Legacy\\home\\bob\\.hermes") <
+    tried1.indexOf("\\\\wsl$\\Legacy\\home\\bob\\.hermes") || !tried1.includes("\\\\wsl$\\Legacy\\home\\bob\\.hermes"));
+
+  // No .hermes anywhere → null (caller falls back to ~/.hermes).
+  assert.equal(discoverWslHermesHome({ runWsl, existsSync: () => false }), null);
+  // A distro whose whoami fails is skipped, not crashed on.
+  assert.equal(
+    discoverWslHermesHome({
+      runWsl: (args) => { if (args[0] === "-l") return list; throw new Error("whoami failed"); },
+      existsSync: () => true,
+    }),
+    null,
   );
 });
 

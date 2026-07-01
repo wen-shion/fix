@@ -7,6 +7,7 @@
   "exact": {
     "claude-fable-5":   { "input": 10,   "output": 50,   "cache_read": 1,     "cache_write": 12.5, "note": "Fable 5 — Anthropic's top tier above Opus. Not yet in LiteLLM. $10/$50 per MTok; cache_read 0.1x, cache_write 1.25x. Remove once LiteLLM carries it." },
     "claude-opus-4-8":  { "input": 5,    "output": 25,   "cache_read": 0.5,   "cache_write": 6.25, "note": "Opus 4.8 not yet in LiteLLM. Pin to the standard Opus tier (same as 4.6/4.7); remove once LiteLLM carries it." },
+    "claude-sonnet-5":  { "input": 3,    "output": 15,   "cache_read": 0.3,   "cache_write": 3.75, "note": "Sonnet 5. LiteLLM added this model on ~2026-06-30 with matching rates, but pin explicitly so pricing is correct immediately rather than depending on the 24h local pricing-cache refresh cycle." },
     "kiro-agent":       { "input": 3,    "output": 15,   "cache_read": 0.3,   "cache_write": 3.75 },
     "kiro-cli-agent":   { "input": 3,    "output": 15,   "cache_read": 0.3,   "cache_write": 3.75 },
     "hy3-preview-agent":{ "input": 0.167, "output": 0.556, "cache_read": 0.056, "cache_write": 0.167, "note": "Tencent Hunyuan Hy3 preview (CodeBuddy/WorkBuddy backend). Official TokenHub rate: 1.2 / 0.4 (cache hit) / 4.0 RMB per MTok in/read/out, converted at ~7.2 RMB/USD. DeepSeek-style cache: no write surcharge, so cache_write = input." },

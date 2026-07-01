@@ -202,7 +202,6 @@ test("zh locale uses reviewed natural copy for settings and dashboard", () => {
   assert.match(core, /"widgets\.topModels\.name":\s*"热门模型"/);
   assert.match(core, /"daily\.sort\.conversations\.label":\s*"对话数"/);
   assert.match(core, /"settings\.account\.githubUrl":\s*"GitHub 主页"/);
-  assert.match(dashboard, /"dashboard\.screenshot\.title_line2":\s*"2025 年度回顾"/);
 
   assert.doesNotMatch(core, /顶级模特|转化次数|InsForge 可以摄取您的队列|斑点条纹和安静的日子一目了然/);
   assert.doesNotMatch(dashboard, /型号分解|动态的|复制的|编码剂|2025 包裹/);
