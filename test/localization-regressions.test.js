@@ -144,7 +144,7 @@ test("Codex Spark usage limits are wired through macOS consumers", () => {
   assert.doesNotMatch(menuBarDisplayPreferences, /Cx Sp [57][hd]/);
   assert.ok(menuBarDisplayPreferences.includes('case .codexSpark5h: return "Codex Spark 5h Limit"'));
   assert.ok(menuBarDisplayPreferences.includes('case .codexSpark7d: return "Codex Spark 7d Limit"'));
-  assert.match(menuBarDisplayPreferences, /case \.codex5h,\s*\.codex7d,\s*\.codexSpark5h,\s*\.codexSpark7d:\s*return "codex"/);
+  assert.match(menuBarDisplayPreferences, /case \.codex5h,\s*\.codex7d,\s*(?:\.codexCredits,\s*)?\.codexSpark5h,\s*\.codexSpark7d:\s*return "codex"/);
   assert.match(menuBarDisplayPreferences, /case \.codexSpark5h:\s*return codex\.sparkPrimaryWindow != nil/);
   assert.match(menuBarDisplayPreferences, /case \.codexSpark7d:\s*return codex\.sparkSecondaryWindow != nil/);
   assert.ok(menuBarDisplayPreferences.includes("return limits.isProviderAvailable(provider) && limits.hasWindow(for: metric)"));
