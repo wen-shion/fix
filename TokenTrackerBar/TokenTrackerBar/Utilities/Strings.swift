@@ -73,15 +73,6 @@ enum Strings {
     static func kimiParallelLabel(_ count: Int) -> String {
         t("Parallel: \(count)", "并发：\(count)", "併發：\(count)", "並列：\(count)", "병렬: \(count)")
     }
-    static func codexCreditsDetail(used: String, limit: String, remaining: String) -> String {
-        t(
-            "\(used) / \(limit) credits used · \(remaining) left",
-            "已用 \(used) / \(limit) 点额度 · 剩余 \(remaining)",
-            "已用 \(used) / \(limit) 點額度 · 剩餘 \(remaining)",
-            "\(used) / \(limit) クレジット使用済み · 残り \(remaining)",
-            "\(used) / \(limit) 크레딧 사용 · 남은 \(remaining)"
-        )
-    }
     static var codexResetBankSectionTitle: String {
         t("Resets", "重置权益", "重置權益", "リセット", "리셋")
     }
