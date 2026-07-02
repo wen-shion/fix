@@ -1,7 +1,7 @@
 const fssync = require("node:fs");
 const path = require("node:path");
 
-const DEFAULT_EXEC_OPTS = { timeout: 5000, windowsHide: true, maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] };
+const DEFAULT_EXEC_OPTS = { timeout: 15000, windowsHide: true, maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] };
 
 const WSL_MODES = new Set([
   "wsl-first",
