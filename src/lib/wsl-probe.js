@@ -3,6 +3,12 @@ const path = require("node:path");
 
 const DEFAULT_EXEC_OPTS = { timeout: 15000, windowsHide: true, maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] };
 
+let _cachedDistros = null;
+
+function resetWslProbeCache() {
+  _cachedDistros = null;
+}
+
 const WSL_MODES = new Set([
   "wsl-first",
   "native-first",
@@ -38,6 +44,8 @@ function parseWslListVerbose(raw) {
 }
 
 function probeWslDistros(deps = {}) {
+  const hasDeps = Object.keys(deps).length > 0;
+  if (!hasDeps && _cachedDistros) return _cachedDistros;
   const runWsl = deps.runWsl || defaultRunWsl;
   let raw;
   try {
@@ -46,7 +54,9 @@ function probeWslDistros(deps = {}) {
     return [];
   }
   const distros = parseWslListVerbose(raw);
-  return distros.sort((a, b) => (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0));
+  const sorted = distros.sort((a, b) => (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0));
+  if (!hasDeps) _cachedDistros = sorted;
+  return sorted;
 }
 
 function normalizeWslMode(value) {
@@ -97,7 +107,7 @@ function discoverWslHome(providerDir, deps = {}) {
 
   const runWsl = deps.runWsl || defaultRunWsl;
   const existsSync = deps.existsSync || fssync.existsSync;
-  const distros = probeWslDistros(deps);
+  const distros = deps.runWsl ? probeWslDistros({ runWsl: deps.runWsl }) : probeWslDistros();
   for (const distro of distros) {
     let user;
     try {
@@ -147,6 +157,7 @@ module.exports = {
   defaultRunWsl,
   parseWslListVerbose,
   probeWslDistros,
+  resetWslProbeCache,
   discoverWslHome,
   isUncPath,
   snapshotSqliteDb,

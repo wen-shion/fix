@@ -429,6 +429,7 @@ async function cmdStatus(argv = []) {
       ...(process.platform === "win32"
         ? {
             wsl_mode: getWslMode(),
+            wsl_mode_invalid: isInvalidWslMode(),
             wsl_distros: wslDistros.map((d) => ({ name: d.name, version: d.version })),
           }
         : {}),

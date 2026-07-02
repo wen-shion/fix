@@ -6,26 +6,7 @@ const cp = require("node:child_process");
 const { test } = require("node:test");
 
 const { cmdStatus } = require("../src/commands/status");
-
-function mockPlatform(t, value) {
-  if (t.mock && typeof t.mock.property === "function") {
-    t.mock.property(process, "platform", value);
-    return;
-  }
-  const original = Object.getOwnPropertyDescriptor(process, "platform");
-  Object.defineProperty(process, "platform", { value, configurable: true });
-  t.after(() => Object.defineProperty(process, "platform", original));
-}
-
-function mockMethod(t, obj, name, impl) {
-  if (t.mock && typeof t.mock.method === "function") {
-    t.mock.method(obj, name, impl);
-    return;
-  }
-  const original = obj[name];
-  obj[name] = impl;
-  t.after(() => { obj[name] = original; });
-}
+const { mockPlatform, mockMethod } = require("./helpers/mock");
 
 test("status prints last upload timestamps from upload.throttle.json", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-status-"));

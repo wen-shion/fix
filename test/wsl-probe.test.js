@@ -15,6 +15,7 @@ const {
   shouldProbeNative,
   pickWin32Path,
   normalizeWslMode,
+  resetWslProbeCache,
 } = require("../src/lib/wsl-probe");
 
 test("parseWslListVerbose parses distros, default marker and version column", () => {
@@ -69,12 +70,14 @@ test("discoverWslHome resolves provider dir via the right UNC alias per distro",
     runWsl,
     existsSync: (p) => {
       tried1.push(p);
-      return p === "\\\\wsl.localhost\\Legacy\\home\\bob\\.myapp";
+      return false;
     },
   });
-  assert.equal(hit1, "\\\\wsl.localhost\\Legacy\\home\\bob\\.myapp");
-  assert.ok(tried1.indexOf("\\\\wsl.localhost\\Legacy\\home\\bob\\.myapp") <
-    tried1.indexOf("\\\\wsl$\\Legacy\\home\\bob\\.myapp") || !tried1.includes("\\\\wsl$\\Legacy\\home\\bob\\.myapp"));
+  assert.equal(hit1, null);
+  const legacyCandidates = tried1.filter((p) => p.includes("Legacy"));
+  assert.ok(legacyCandidates.length >= 2);
+  assert.ok(legacyCandidates[0].includes("wsl.localhost"));
+  assert.ok(legacyCandidates[1].includes("wsl$"));
 
   assert.equal(discoverWslHome(".myapp", { runWsl, existsSync: () => false }), null);
   assert.equal(

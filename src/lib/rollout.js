@@ -3842,7 +3842,7 @@ function pickWin32ProviderPath({ env = process.env, nativeValue, wslProviderDir,
   const nativeCandidate = wsl.shouldProbeNative(env) ? nativeValue : null;
   const wslCandidate = wslValue !== undefined
     ? wslValue
-    : (wsl.shouldProbeWsl(env) ? wsl.discoverWslHome(wslProviderDir, { env }) : null);
+    : (wsl.shouldProbeWsl(env) ? wsl.discoverWslHome(wslProviderDir) : null);
   return wsl.pickWin32Path({
     wslValue: wslCandidate,
     nativeValue: nativeCandidate,
