@@ -5,10 +5,23 @@ import { copy } from "../../../lib/copy";
 export const PROVIDER_LIMIT_SPECS = {
   claude: {
     windows(data) {
+      // Model-scoped weekly windows (e.g. Fable) are dynamic: the label comes from
+      // the API's `scope.model.display_name`, so `label` is set instead of `labelKey`.
+      const scoped = Array.isArray(data.weekly_scoped)
+        ? data.weekly_scoped.map((w) => ({
+            key: `scoped-${w.label}`,
+            label: w.label,
+            window: w,
+            pctField: "utilization",
+            resetField: "resets_at",
+            windowSeconds: 7 * 86400,
+          }))
+        : [];
       return [
         { key: "5h", labelKey: "limits.label.claude_5h", window: data.five_hour, pctField: "utilization", resetField: "resets_at", windowSeconds: 5 * 3600 },
         { key: "7d", labelKey: "limits.label.claude_7d", window: data.seven_day, pctField: "utilization", resetField: "resets_at", windowSeconds: 7 * 86400 },
         { key: "opus", labelKey: "limits.label.claude_opus", window: data.seven_day_opus, pctField: "utilization", resetField: "resets_at", windowSeconds: 7 * 86400 },
+        ...scoped,
       ];
     },
   },

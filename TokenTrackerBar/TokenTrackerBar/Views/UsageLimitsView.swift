@@ -178,6 +178,9 @@ struct UsageLimitsView: View {
         if let w = c.fiveHour { s.append(makeSpec("5h", w.utilization, windowSeconds: 5 * 3600, iso: w.resetsAt)) }
         if let w = c.sevenDay { s.append(makeSpec("7d", w.utilization, windowSeconds: 7 * 86400, iso: w.resetsAt)) }
         if let w = c.sevenDayOpus { s.append(makeSpec("Opus", w.utilization, windowSeconds: 7 * 86400, iso: w.resetsAt)) }
+        for w in c.weeklyScoped ?? [] {
+            s.append(makeSpec(w.label, w.utilization, windowSeconds: 7 * 86400, iso: w.resetsAt))
+        }
         return s
     }
 

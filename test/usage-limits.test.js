@@ -1398,6 +1398,198 @@ describe("getUsageLimits", () => {
     }
   });
 
+  it("extracts Claude model-scoped weekly windows from the generic limits array", async () => {
+    resetUsageLimitsCache();
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-limits-claude-scoped-"));
+    try {
+      const claudeDir = path.join(tmp, ".claude");
+      fs.mkdirSync(claudeDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(claudeDir, ".credentials.json"),
+        JSON.stringify({ claudeAiOauth: { accessToken: "scoped-claude-token" } }),
+      );
+      const resetsAt = new Date(Date.now() + 3 * 86400 * 1000).toISOString();
+
+      const result = await getUsageLimits({
+        home: tmp,
+        platform: "linux",
+        providerTimeoutMs: 1000,
+        securityRunner() {
+          return { status: 1, stdout: "" };
+        },
+        commandRunner() {
+          return { status: 1, stdout: "" };
+        },
+        fetchImpl(url) {
+          if (typeof url === "string" && url === "https://api.anthropic.com/api/oauth/usage") {
+            return Promise.resolve({
+              ok: true,
+              status: 200,
+              json: async () => ({
+                five_hour: { utilization: 42, resets_at: resetsAt },
+                seven_day: { utilization: 5, resets_at: resetsAt },
+                seven_day_opus: null,
+                limits: [
+                  { kind: "session", group: "session", percent: 42, resets_at: resetsAt, scope: null },
+                  { kind: "weekly_all", group: "weekly", percent: 5, resets_at: resetsAt, scope: null },
+                  {
+                    kind: "weekly_scoped",
+                    group: "weekly",
+                    percent: 8,
+                    resets_at: resetsAt,
+                    scope: { model: { id: null, display_name: "Fable" }, surface: null },
+                  },
+                  // No usable label → dropped.
+                  { kind: "weekly_scoped", group: "weekly", percent: 3, resets_at: resetsAt, scope: { model: { id: null, display_name: null } } },
+                ],
+              }),
+            });
+          }
+          return pendingUnlessCodexReset(url);
+        },
+      });
+
+      assert.equal(result.claude.error, null);
+      assert.deepEqual(result.claude.weekly_scoped, [
+        { label: "Fable", utilization: 8, resets_at: resetsAt },
+      ]);
+      // The scoped window must survive the disk-cache round trip.
+      const cachePath = path.join(tmp, ".tokentracker", "tracker", "claude-usage-limits-cache.json");
+      const cached = JSON.parse(fs.readFileSync(cachePath, "utf8"));
+      assert.deepEqual(cached.claude.weekly_scoped, [
+        { label: "Fable", utilization: 8, resets_at: resetsAt },
+      ]);
+    } finally {
+      resetUsageLimitsCache();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("drops a scoped weekly entry that duplicates a populated seven_day_opus window", async () => {
+    resetUsageLimitsCache();
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-limits-claude-scoped-opus-"));
+    try {
+      const claudeDir = path.join(tmp, ".claude");
+      fs.mkdirSync(claudeDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(claudeDir, ".credentials.json"),
+        JSON.stringify({ claudeAiOauth: { accessToken: "scoped-opus-token" } }),
+      );
+      const resetsAt = new Date(Date.now() + 3 * 86400 * 1000).toISOString();
+
+      const result = await getUsageLimits({
+        home: tmp,
+        platform: "linux",
+        providerTimeoutMs: 1000,
+        securityRunner() {
+          return { status: 1, stdout: "" };
+        },
+        commandRunner() {
+          return { status: 1, stdout: "" };
+        },
+        fetchImpl(url) {
+          if (typeof url === "string" && url === "https://api.anthropic.com/api/oauth/usage") {
+            return Promise.resolve({
+              ok: true,
+              status: 200,
+              json: async () => ({
+                five_hour: { utilization: 10, resets_at: resetsAt },
+                seven_day: { utilization: 20, resets_at: resetsAt },
+                seven_day_opus: { utilization: 30, resets_at: resetsAt },
+                limits: [
+                  {
+                    kind: "weekly_scoped",
+                    group: "weekly",
+                    percent: 30,
+                    resets_at: resetsAt,
+                    scope: { model: { id: null, display_name: "Opus" }, surface: null },
+                  },
+                  {
+                    kind: "weekly_scoped",
+                    group: "weekly",
+                    percent: 8,
+                    resets_at: resetsAt,
+                    scope: { model: { id: null, display_name: "Fable" }, surface: null },
+                  },
+                ],
+              }),
+            });
+          }
+          return pendingUnlessCodexReset(url);
+        },
+      });
+
+      assert.equal(result.claude.error, null);
+      assert.deepEqual(result.claude.seven_day_opus, { utilization: 30, resets_at: resetsAt });
+      assert.deepEqual(result.claude.weekly_scoped, [
+        { label: "Fable", utilization: 8, resets_at: resetsAt },
+      ]);
+    } finally {
+      resetUsageLimitsCache();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("serves cached scoped weekly windows but drops entries whose reset has passed", async () => {
+    resetUsageLimitsCache();
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-limits-claude-scoped-cache-"));
+    try {
+      const claudeDir = path.join(tmp, ".claude");
+      fs.mkdirSync(claudeDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(claudeDir, ".credentials.json"),
+        JSON.stringify({ claudeAiOauth: { accessToken: "scoped-cache-token" } }),
+      );
+      const trackerDir = path.join(tmp, ".tokentracker", "tracker");
+      fs.mkdirSync(trackerDir, { recursive: true });
+      const futureReset = new Date(Date.now() + 3 * 86400 * 1000).toISOString();
+      const pastReset = new Date(Date.now() - 3600 * 1000).toISOString();
+      // Fresh cache (within the 10-minute TTL) short-circuits the upstream call.
+      fs.writeFileSync(
+        path.join(trackerDir, "claude-usage-limits-cache.json"),
+        JSON.stringify({
+          claude: {
+            five_hour: { utilization: 12, resets_at: futureReset },
+            seven_day: { utilization: 34, resets_at: futureReset },
+            seven_day_opus: null,
+            weekly_scoped: [
+              { label: "Fable", utilization: 8, resets_at: futureReset },
+              { label: "Stale Model", utilization: 90, resets_at: pastReset },
+            ],
+            extra_usage: null,
+            cached_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+          },
+        }),
+      );
+
+      const result = await getUsageLimits({
+        home: tmp,
+        platform: "linux",
+        providerTimeoutMs: 1000,
+        securityRunner() {
+          return { status: 1, stdout: "" };
+        },
+        commandRunner() {
+          return { status: 1, stdout: "" };
+        },
+        fetchImpl(url) {
+          if (typeof url === "string" && url === "https://api.anthropic.com/api/oauth/usage") {
+            throw new Error("fresh cache must short-circuit the Claude usage call");
+          }
+          return pendingUnlessCodexReset(url);
+        },
+      });
+
+      assert.equal(result.claude.error, null);
+      assert.deepEqual(result.claude.weekly_scoped, [
+        { label: "Fable", utilization: 8, resets_at: futureReset },
+      ]);
+    } finally {
+      resetUsageLimitsCache();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("reads the Claude OAuth access token from %USERPROFILE%\\.claude\\.credentials.json on Windows", async () => {
     resetUsageLimitsCache();
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-limits-claude-win32-"));

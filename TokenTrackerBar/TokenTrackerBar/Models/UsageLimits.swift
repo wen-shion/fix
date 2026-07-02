@@ -28,6 +28,7 @@ struct ClaudeLimits: Codable, Equatable {
     let fiveHour: ClaudeWindow?
     let sevenDay: ClaudeWindow?
     let sevenDayOpus: ClaudeWindow?
+    let weeklyScoped: [ClaudeScopedWindow]?
     let extraUsage: ClaudeExtraUsage?
 
     enum CodingKeys: String, CodingKey {
@@ -36,6 +37,7 @@ struct ClaudeLimits: Codable, Equatable {
         case fiveHour = "five_hour"
         case sevenDay = "seven_day"
         case sevenDayOpus = "seven_day_opus"
+        case weeklyScoped = "weekly_scoped"
         case extraUsage = "extra_usage"
     }
 }
@@ -46,6 +48,19 @@ struct ClaudeWindow: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case utilization
+        case resetsAt = "resets_at"
+    }
+}
+
+/// Model-scoped weekly window (e.g. Fable): the label is server-provided
+/// (`scope.model.display_name` upstream), so rows render dynamically.
+struct ClaudeScopedWindow: Codable, Equatable {
+    let label: String
+    let utilization: Double
+    let resetsAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case label, utilization
         case resetsAt = "resets_at"
     }
 }

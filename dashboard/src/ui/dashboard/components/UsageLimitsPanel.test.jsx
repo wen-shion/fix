@@ -65,6 +65,28 @@ describe("UsageLimitsPanel", () => {
     expect(screen.getByText("Plan")).toBeInTheDocument();
   });
 
+  it("renders Claude model-scoped weekly windows with their server-provided labels", () => {
+    render(
+      <UsageLimitsPanel
+        claude={{
+          configured: true,
+          error: null,
+          five_hour: { utilization: 42, resets_at: "2026-07-02T05:29:59.000Z" },
+          seven_day: { utilization: 5, resets_at: "2026-07-05T14:59:59.000Z" },
+          seven_day_opus: null,
+          weekly_scoped: [
+            { label: "Fable", utilization: 8, resets_at: "2026-07-05T14:59:59.000Z" },
+          ],
+        }}
+        order={["claude"]}
+      />,
+    );
+
+    expect(screen.getByText("Claude")).toBeInTheDocument();
+    expect(screen.getByText("Fable")).toBeInTheDocument();
+    expect(screen.getByText("8%")).toBeInTheDocument();
+  });
+
   it("renders Kimi quota windows and not-connected state", () => {
     const { rerender } = render(
       <UsageLimitsPanel

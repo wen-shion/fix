@@ -150,6 +150,9 @@ extension UsageLimitsResponse {
                 guard let window else { continue }
                 out.append(("claude", "claude.\(name)", window.utilization, parseResetSeconds(iso: window.resetsAt)))
             }
+            for window in claude.weeklyScoped ?? [] {
+                out.append(("claude", "claude.scoped.\(window.label.lowercased())", window.utilization, parseResetSeconds(iso: window.resetsAt)))
+            }
         }
 
         if codex.configured, codex.error == nil {

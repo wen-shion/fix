@@ -236,6 +236,11 @@ enum WidgetSnapshotWriter {
                                          fraction: w.utilization / 100.0,
                                          resetsAt: parseISO(w.resetsAt)))
             }
+            for w in limits.claude.weeklyScoped ?? [] {
+                out.append(LimitProvider(source: "claude", label: "Claude · 7d \(w.label)",
+                                         fraction: w.utilization / 100.0,
+                                         resetsAt: parseISO(w.resetsAt)))
+            }
         }
 
         // Codex

@@ -144,6 +144,34 @@ function formatClaudeRateLimitMessage(retryAfterSec) {
   return "Claude API rate limited (429) — retry shortly.";
 }
 
+// Model-scoped weekly windows (e.g. Fable) arrive only in the newer generic `limits`
+// array (`kind: "weekly_scoped"` + `scope.model.display_name`) — the legacy top-level
+// fields (`seven_day_opus` etc.) stay null for them. Extract them into
+// `weekly_scoped: [{ label, utilization, resets_at }]`. Entries that duplicate a
+// populated legacy field (an "Opus" scoped entry alongside `seven_day_opus`) are
+// dropped so the same window never renders twice.
+function extractClaudeScopedWeekly(body) {
+  if (!Array.isArray(body?.limits)) return null;
+  const out = [];
+  for (const entry of body.limits) {
+    if (!entry || typeof entry !== "object" || entry.kind !== "weekly_scoped") continue;
+    const model = entry.scope?.model;
+    const label = typeof model?.display_name === "string" && model.display_name.trim()
+      ? model.display_name.trim()
+      : typeof model?.id === "string" && model.id.trim() ? model.id.trim() : null;
+    if (!label) continue;
+    if (body.seven_day_opus && label.toLowerCase() === "opus") continue;
+    const utilization = Number(entry.percent);
+    if (!Number.isFinite(utilization)) continue;
+    out.push({
+      label,
+      utilization,
+      resets_at: typeof entry.resets_at === "string" ? entry.resets_at : null,
+    });
+  }
+  return out.length > 0 ? out : null;
+}
+
 async function fetchClaudeUsageLimits(accessToken, { fetchImpl = fetch, maxAttempts = 3 } = {}) {
   const url = "https://api.anthropic.com/api/oauth/usage";
   const headers = {
@@ -178,6 +206,7 @@ async function fetchClaudeUsageLimits(accessToken, { fetchImpl = fetch, maxAttem
       five_hour: body.five_hour ?? null,
       seven_day: body.seven_day ?? null,
       seven_day_opus: body.seven_day_opus ?? null,
+      weekly_scoped: extractClaudeScopedWeekly(body),
       extra_usage: body.extra_usage ?? null,
     };
   }
@@ -1848,7 +1877,21 @@ function isClaudeCacheWindowUsable(window, { nowMs } = {}) {
 }
 
 function hasClaudeWindow(limits) {
-  return Boolean(limits?.five_hour || limits?.seven_day || limits?.seven_day_opus);
+  return Boolean(
+    limits?.five_hour || limits?.seven_day || limits?.seven_day_opus ||
+    (Array.isArray(limits?.weekly_scoped) && limits.weekly_scoped.length > 0),
+  );
+}
+
+// Cached scoped windows are filtered per-entry like the fixed windows: a scoped
+// window whose reset has passed is stale data, not a usable fallback.
+function normalizeClaudeCachedScopedWeekly(raw, { nowMs } = {}) {
+  if (!Array.isArray(raw)) return null;
+  const usable = raw.filter(
+    (w) => w && typeof w.label === "string" && Number.isFinite(Number(w.utilization)) &&
+      isClaudeCacheWindowUsable(w, { nowMs }),
+  );
+  return usable.length > 0 ? usable : null;
 }
 
 function normalizeClaudeCachedLimits(
@@ -1870,6 +1913,7 @@ function normalizeClaudeCachedLimits(
     five_hour: isClaudeCacheWindowUsable(raw?.five_hour, { nowMs }) ? raw.five_hour : null,
     seven_day: isClaudeCacheWindowUsable(raw?.seven_day, { nowMs }) ? raw.seven_day : null,
     seven_day_opus: isClaudeCacheWindowUsable(raw?.seven_day_opus, { nowMs }) ? raw.seven_day_opus : null,
+    weekly_scoped: normalizeClaudeCachedScopedWeekly(raw?.weekly_scoped, { nowMs }),
     extra_usage: raw?.extra_usage ?? null,
     stale,
     cached_at: raw.cached_at,
@@ -1909,6 +1953,9 @@ function writeClaudeLimitsCache(limits, { home, nowMs = Date.now() } = {}) {
       five_hour: limits.five_hour || null,
       seven_day: limits.seven_day || null,
       seven_day_opus: limits.seven_day_opus || null,
+      weekly_scoped: Array.isArray(limits.weekly_scoped) && limits.weekly_scoped.length > 0
+        ? limits.weekly_scoped
+        : null,
       extra_usage: limits.extra_usage || null,
       cached_at: new Date(nowMs).toISOString(),
     },
@@ -2646,6 +2693,7 @@ async function fetchUsageLimitsUncached({
       five_hour: claudeResult.value.five_hour,
       seven_day: claudeResult.value.seven_day,
       seven_day_opus: claudeResult.value.seven_day_opus,
+      weekly_scoped: claudeResult.value.weekly_scoped,
       extra_usage: claudeResult.value.extra_usage,
     };
     writeClaudeLimitsCache(claude, { home, nowMs });
