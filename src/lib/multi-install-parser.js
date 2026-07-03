@@ -1,5 +1,5 @@
 const wsl = require("./wsl-probe");
-const { ensureNamespacedCursors } = require("./install-resolver");
+const { ensureNamespacedCursors, ensureFlatCursor } = require("./install-resolver");
 
 const ISSUE_URL = "https://github.com/mm7894215/TokenTracker/issues";
 
@@ -13,6 +13,7 @@ async function multiInstallParse({ paths, parserFn, providerName, cursors, getPa
   const env = shared.env || process.env;
 
   if (installKeys.length === 1) {
+    ensureFlatCursor(cursors, providerName, env);
     return await parserFn({
       ...getParams(paths[installKeys[0]], installKeys[0]),
       ...shared,
@@ -128,9 +129,11 @@ function wrapProgress(onProgress, installKey) {
 }
 
 function mergeBothFileSources({ resolveFiles, env }) {
-  const files = resolveFiles(env);
-  if (files.length === 0) return files;
-  if (process.platform !== "win32" || wsl.getWslMode(env) !== "both") return files;
+  const isBoth = process.platform === "win32" && wsl.getWslMode(env) === "both";
+  if (!isBoth) {
+    const files = resolveFiles(env);
+    return files;
+  }
 
   const nativeEnv = { ...env, TOKENTRACKER_WSL_MODE: "native-only" };
   const wslEnv = { ...env, TOKENTRACKER_WSL_MODE: "wsl-only" };

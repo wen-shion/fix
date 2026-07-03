@@ -169,3 +169,31 @@ test("multiInstallParse empty install produces correct partial result", async ()
   assert.equal(r.eventsAggregated, 3);
   assert.equal(r.bucketsQueued, 1);
 });
+
+test("multiInstallParse dual-to-single transition with namespaced cursor", async () => {
+  const cursors = {
+    hourly: { buckets: {} },
+    hermes: {
+      native: { lastCompletedStartedAt: 100, snapshots: { s1: { in: 50 } } },
+      wsl: { lastCompletedStartedAt: 200, snapshots: { s2: { in: 25 } } },
+    },
+  };
+
+  // Call with only one active path (simulates switching from both to single mode)
+  const r = await multiInstallParse({
+    paths: { native: "/native-only", wsl: null },
+    parserFn: async ({ cursors: c }) => {
+      // The cursor should have been flattened — verify the expected keys
+      const state = c.hermes;
+      assert.ok(state.lastCompletedStartedAt !== undefined,
+        "single-path parse should see flat cursor, not namespace wrapper");
+      assert.equal(state.native, undefined, "namespace keys should not exist in flat cursor");
+      return { recordsProcessed: 1 };
+    },
+    providerName: "hermes",
+    cursors,
+    getParams: (path) => ({ hermesPath: path }),
+  });
+
+  assert.equal(r.recordsProcessed, 1);
+});

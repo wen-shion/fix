@@ -57,17 +57,34 @@ test("resolveInstallPaths both mode single-install fallback", (t) => {
   }
 });
 
-test("resolveInstallPaths non-both modes return single path", (t) => {
+test("resolveInstallPaths non-both modes return single path with correct selection", (t) => {
   mockPlatform(t, "win32");
-  for (const mode of ["wsl-first", "native-first", "wsl-only", "native-only", undefined]) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ir-mode-test-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const nativeDir = path.join(tmpDir, "native");
+  const wslDir = path.join(tmpDir, "wsl");
+  fs.mkdirSync(nativeDir, { recursive: true });
+  fs.mkdirSync(wslDir, { recursive: true });
+  // Put a marker file in native so we can identify which path was selected
+  fs.writeFileSync(path.join(nativeDir, ".native-marker"), "");
+  fs.writeFileSync(path.join(wslDir, ".wsl-marker"), "");
+
+  const cases = [
+    { mode: "wsl-first",    expected: wslDir },
+    { mode: "native-first", expected: nativeDir },
+    { mode: "wsl-only",     expected: wslDir },
+    { mode: "native-only",  expected: nativeDir },
+    { mode: undefined,      expected: wslDir },
+  ];
+  for (const { mode, expected } of cases) {
     const env = mode ? { TOKENTRACKER_WSL_MODE: mode } : {};
     const r = resolveInstallPaths("hermes",
-      { nativeValue: "C:\\native", wslValue: "\\\\wsl$\\path" },
+      { nativeValue: nativeDir, wslValue: wslDir },
       env,
       { runWsl: () => "Ubuntu\n", existsSync: () => true },
     );
     assert.equal(r.wsl, null, `mode=${mode} should have wsl=null`);
-    assert.ok(typeof r.native === "string" || r.native === null, `mode=${mode} native should be string or null`);
+    assert.equal(r.native, expected, `mode=${mode} should select ${expected}`);
   }
 });
 

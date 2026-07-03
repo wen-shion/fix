@@ -7,7 +7,7 @@ const fs = require("node:fs");
 const { ensureNamespacedCursors, ensureFlatCursor } = require("../src/lib/install-resolver");
 const { multiInstallParse } = require("../src/lib/multi-install-parser");
 
-test("flat cursor migrates to both namespaces", () => {
+test("flat cursor migrates to both namespaces with independent references", () => {
   const cursors = {
     hermes: {
       lastCompletedStartedAt: 100,
@@ -23,9 +23,17 @@ test("flat cursor migrates to both namespaces", () => {
   assert.ok(ns.wsl, "wsl namespace should exist");
   assert.equal(ns.native.lastCompletedStartedAt, 100);
   assert.deepEqual(ns.native.unfinishedSessionIds, ["s1", "s2"]);
-  assert.deepEqual(ns.native.snapshots, { s1: { in: 50, out: 25 } });
-  assert.equal(ns.wsl.lastCompletedStartedAt, 100, "wsl should also have the flat data");
   assert.deepEqual(ns.wsl.snapshots, { s1: { in: 50, out: 25 } });
+
+  // Verify nested objects are independent references (deep copy, not shared)
+  assert.notEqual(ns.native.snapshots, ns.wsl.snapshots, "snapshots should be independent copies");
+  assert.notEqual(ns.native.unfinishedSessionIds, ns.wsl.unfinishedSessionIds, "arrays should be independent copies");
+
+  // Mutating one namespace should not affect the other
+  ns.native.snapshots.s2 = { in: 99 };
+  ns.wsl.unfinishedSessionIds.push("wsl-only");
+  assert.equal(Object.keys(ns.wsl.snapshots).length, 1, "WSL snapshots should not have native mutations");
+  assert.equal(ns.native.unfinishedSessionIds.length, 2, "native array should not have WSL mutations");
 });
 
 test("ensureFlatCursor merges namespaces with wsl-first default", () => {

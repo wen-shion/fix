@@ -3827,13 +3827,13 @@ function discoverWslHermesHome(deps = {}) {
   return wsl.discoverWslHome(".hermes", deps);
 }
 
-function pickWin32ProviderPath({ env = process.env, nativeValue, wslProviderDir, wslValue }) {
-  const paths = resolveInstallPaths("_", { nativeValue, wslDir: wslProviderDir, wslValue }, env);
+function pickWin32ProviderPath({ env = process.env, nativeValue, wslProviderDir, wslValue, deps = {} }) {
+  const paths = resolveInstallPaths("_", { nativeValue, wslDir: wslProviderDir, wslValue }, env, deps);
   return paths.native || paths.wsl;
 }
 
-function resolveAllWin32ProviderPaths({ env = process.env, nativeValue, wslProviderDir, wslValue }) {
-  return resolveInstallPaths("_", { nativeValue, wslDir: wslProviderDir, wslValue }, env);
+function resolveAllWin32ProviderPaths({ env = process.env, nativeValue, wslProviderDir, wslValue, deps = {} }) {
+  return resolveInstallPaths("_", { nativeValue, wslDir: wslProviderDir, wslValue }, env, deps);
 }
 
 function resolveHermesDbPath(env = process.env) {

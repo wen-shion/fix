@@ -31,8 +31,10 @@ function ensureNamespacedCursors(cursors, providerName) {
     return state;
   }
 
-  const flat = JSON.parse(JSON.stringify(state));
-  cursors[providerName] = { native: { ...flat }, wsl: { ...flat } };
+  cursors[providerName] = {
+    native: JSON.parse(JSON.stringify(state)),
+    wsl: JSON.parse(JSON.stringify(state)),
+  };
   return cursors[providerName];
 }
 
