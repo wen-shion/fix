@@ -1,13 +1,13 @@
 {
-  "generatedAt": "2026-07-01T12:12:18.512Z",
+  "generatedAt": "2026-07-04T09:28:02.390Z",
   "root": "dashboard/src",
   "rules": {
     "colors": "hex/rgb(a) literals",
     "rawText": "JSX text nodes containing letters or digits"
   },
   "totals": {
-    "colors": 275,
-    "rawText": 168
+    "colors": 276,
+    "rawText": 167
   },
   "files": {
     "dashboard/src/components/InsforgeUserHeaderControls.jsx": {
@@ -20,6 +20,11 @@
     },
     "dashboard/src/components/LeaderboardSummaryCard.jsx": {
       "colors": 3,
+      "rawText": 0,
+      "rawTextTokens": []
+    },
+    "dashboard/src/components/LeaderboardSummaryCard.test.jsx": {
+      "colors": 1,
       "rawText": 0,
       "rawTextTokens": []
     },
@@ -206,13 +211,12 @@
     },
     "dashboard/src/ui/dashboard/components/ActivityHeatmap.jsx": {
       "colors": 28,
-      "rawText": 5,
+      "rawText": 4,
       "rawTextTokens": [
         "0 ? (",
         "3D Insight",
         "Model Breakdown",
-        "Tokens",
-        "with position: fixed, so use viewport // coordinates directly. This keeps it visible inside the leaderboard // profile modal, where the Dialog.Popup has both `overflow-hidden` and // a `transform` (from the open/close transition) — that combo clips any // absolute-positioned tooltip rendered inside the modal subtree. const rect = e.currentTarget.getBoundingClientRect(); const viewportWidth = typeof window !== \"undefined\" ? window.innerWidth : 1024; const x = rect.left + rect.width / 2; const y = rect.top; const halfWidth = 140; let shiftX = 0; if (x"
+        "Tokens"
       ]
     },
     "dashboard/src/ui/dashboard/components/ActivityHeatmap3D.jsx": {
