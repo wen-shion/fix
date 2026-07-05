@@ -223,14 +223,14 @@ async function cmdStatus(argv = []) {
 
   // oh-my-pi — passive scan only (no hooks).
   const ompAgentDir = resolveOmpAgentDir(process.env);
-  const ompInstalled = fssync.existsSync(path.join(ompAgentDir, "sessions"));
+  const ompInstalled = Boolean(ompAgentDir) && fssync.existsSync(path.join(ompAgentDir, "sessions"));
   const ompFiles = ompInstalled ? resolveOmpSessionFiles(process.env) : [];
 
   // pi (@mariozechner/pi-coding-agent) — passive scan only (no hooks).
   // Skip when its agent dir collides with omp's; sync would dedupe anyway.
   const piCollides = piAgentDirCollidesWithOmp(process.env);
   const piAgentDir = resolvePiAgentDir(process.env);
-  const piInstalled = !piCollides && fssync.existsSync(path.join(piAgentDir, "sessions"));
+  const piInstalled = !piCollides && Boolean(piAgentDir) && fssync.existsSync(path.join(piAgentDir, "sessions"));
   const piFiles = piInstalled ? resolvePiSessionFiles(process.env) : [];
 
   // Craft Agents — passive scan only (no hooks).

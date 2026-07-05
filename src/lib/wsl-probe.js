@@ -16,6 +16,7 @@ const WSL_MODES = new Set([
   "native-first",
   "wsl-only",
   "native-only",
+  "both",
 ]);
 
 function defaultRunWsl(args, { utf16 = false } = {}) {
@@ -98,11 +99,30 @@ function pickWin32Path({
 
   const mode = getWslMode(env);
 
+  if (mode === "both") return wslValue ?? nativeValue ?? null;
   if (mode === "wsl-only") return wslValue ?? null;
   if (mode === "native-only") return nativeValue ?? null;
   if (mode === "native-first") return nativeValue ?? wslValue ?? null;
 
   return wslValue ?? nativeValue ?? null;
+}
+
+function resolveAllWin32Paths({
+  nativeValue,
+  wslValue,
+  env = process.env,
+  platform = process.platform,
+}) {
+  if (platform !== "win32") return { native: null, wsl: null };
+
+  const mode = getWslMode(env);
+
+  if (mode === "both") {
+    return { native: nativeValue ?? null, wsl: wslValue ?? null };
+  }
+
+  const single = pickWin32Path({ wslValue, nativeValue, env, platform });
+  return { native: single, wsl: null };
 }
 
 function lookupWslUser(distroName, runWsl, useCache) {
@@ -177,5 +197,6 @@ module.exports = {
   shouldProbeWsl,
   shouldProbeNative,
   pickWin32Path,
+  resolveAllWin32Paths,
   normalizeWslMode,
 };
