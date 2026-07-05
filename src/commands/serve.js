@@ -11,6 +11,13 @@ const { serveStaticFile } = require("../lib/static-server");
 const { openInBrowser } = require("../lib/browser-auth");
 
 const DEFAULT_PORT = 7680;
+// Windows Delivery Optimization (DoSvc) listens on 0.0.0.0:7680 on virtually
+// every Windows host. Under WSL2 NAT networking the in-WSL bind succeeds (the
+// conflict lives on the Windows side of the loopback), but the Windows
+// browser reaches DoSvc instead of the dashboard, which accepts the TCP
+// connection and drops the HTTP request (#267). The in-WSL "port busy → try
+// next" fallback can't see this, so WSL starts one port up by default.
+const WSL_DEFAULT_PORT = 7681;
 const DEFAULT_MAX_PORT_ATTEMPTS = 20;
 const NPM_PACKAGE_NAME = "tokentracker-cli";
 const LOCAL_BIND_HOST = "127.0.0.1";
@@ -159,6 +166,11 @@ async function cmdServe(argv) {
 
   // 4. Listen. Default startup follows README behavior and picks the next
   // available port; an explicit --port/PORT remains strict.
+  if (opts.wslDefaultPort) {
+    process.stdout.write(
+      `Running under WSL: using port ${opts.port} (7680 is held by the Windows Delivery Optimization service on the host — see issue #267). Pass --port to override.\n`,
+    );
+  }
   let port;
   try {
     port = await listenOnAvailablePort(server, opts.port, {
@@ -369,11 +381,27 @@ function parsePort(value) {
   return Number.isFinite(n) && n > 0 && n < 65536 ? n : null;
 }
 
+function isRunningUnderWsl(env = process.env, readFileFn = fssync.readFileSync) {
+  if (process.platform !== "linux") return false;
+  if (env.WSL_DISTRO_NAME || env.WSL_INTEROP) return true;
+  try {
+    return /microsoft/i.test(String(readFileFn("/proc/version", "utf8")));
+  } catch (_e) {
+    return false;
+  }
+}
+
+function resolveDefaultPort(env = process.env, readFileFn) {
+  return isRunningUnderWsl(env, readFileFn) ? WSL_DEFAULT_PORT : DEFAULT_PORT;
+}
+
 function parseArgs(argv, env = process.env) {
   const envPort = parsePort(env.PORT);
+  const defaultPort = resolveDefaultPort(env);
   const opts = {
-    port: envPort || DEFAULT_PORT,
+    port: envPort || defaultPort,
     portExplicit: Boolean(envPort),
+    wslDefaultPort: !envPort && defaultPort === WSL_DEFAULT_PORT,
     open: true,
     sync: true,
   };
@@ -384,6 +412,7 @@ function parseArgs(argv, env = process.env) {
       if (n) {
         opts.port = n;
         opts.portExplicit = true;
+        opts.wslDefaultPort = false;
       }
     } else if (arg === "--no-open") {
       opts.open = false;
@@ -403,5 +432,7 @@ module.exports = {
   listenOnAvailablePort,
   getLocalServerUrl,
   parseArgs,
+  isRunningUnderWsl,
+  resolveDefaultPort,
   shouldServeSpaFallback,
 };

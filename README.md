@@ -330,6 +330,8 @@ To find what's holding `7680`:
 lsof -i :7680
 ```
 
+**WSL2 note**: on Windows hosts the Delivery Optimization service (`DoSvc`) listens on `7680`, and under NAT networking the conflict is invisible from inside WSL — the server starts fine but the Windows browser reaches `DoSvc` instead. TokenTracker therefore defaults to `7681` when running under WSL (logged on startup).
+
 </details>
 
 <details>

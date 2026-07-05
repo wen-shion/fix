@@ -323,6 +323,8 @@ PORT=7700 tokentracker serve
 lsof -i :7680
 ```
 
+**WSL2 说明**：Windows 宿主机上的传递优化服务（`DoSvc`）默认监听 `7680`，NAT 网络模式下这个冲突在 WSL 内部检测不到——server 正常启动，但 Windows 浏览器访问到的是 `DoSvc`。因此 TokenTracker 在 WSL 中默认改用 `7681`（启动日志会说明）。
+
 </details>
 
 <details>

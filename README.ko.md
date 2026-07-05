@@ -318,6 +318,8 @@ PORT=7700 tokentracker serve
 lsof -i :7680
 ```
 
+**WSL2 참고**: Windows 호스트에서는 전송 최적화 서비스(`DoSvc`)가 `7680`을 수신 대기하며, NAT 네트워킹에서는 이 충돌을 WSL 내부에서 감지할 수 없습니다 — 서버는 정상적으로 시작되지만 Windows 브라우저는 `DoSvc`에 연결됩니다. 따라서 TokenTracker는 WSL에서 기본적으로 `7681`을 사용합니다(시작 시 로그에 표시).
+
 </details>
 
 <details>
