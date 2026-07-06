@@ -16,24 +16,25 @@ struct LimitsSettingsView: View {
                 .padding(.bottom, 6)
 
             HStack(spacing: 10) {
-                Text(Strings.limitDisplayModeLabel)
+                Text(Strings.limitDisplayModeRemaining)
                     .font(.system(.body, design: .default))
                     .foregroundStyle(.primary)
                 Spacer()
-                Picker("", selection: Binding(
-                    get: { store.displayMode },
-                    set: { store.setDisplayModeFromMenu($0) }
-                )) {
-                    Text(Strings.limitDisplayModeUsed).tag(LimitDisplayMode.used)
-                    Text(Strings.limitDisplayModeRemaining).tag(LimitDisplayMode.remaining)
-                }
-                .pickerStyle(.segmented)
-                .controlSize(.small)
+                Toggle("", isOn: Binding(
+                    get: { store.displayMode == .remaining },
+                    set: { store.setDisplayModeFromMenu($0 ? .remaining : .used) }
+                ))
+                .toggleStyle(.switch)
+                .controlSize(.mini)
                 .labelsHidden()
-                .frame(width: 132)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
+
+            // Workaround for Xcode 16 SwiftUICore linking bug
+            Text("")
+                .tag(0)
+                .frame(width: 0, height: 0)
 
             HStack(spacing: 10) {
                 Text(Strings.confettiOnResetLabel)

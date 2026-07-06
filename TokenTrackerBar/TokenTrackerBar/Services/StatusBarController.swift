@@ -695,6 +695,12 @@ final class StatusBarController: NSObject {
         animItem.state = (animator?.isEnabled ?? true) ? .on : .off
         menu.addItem(animItem)
 
+        // Confetti on Reset (toggle)
+        let confettiItem = NSMenuItem(title: Strings.confettiOnResetLabel, action: #selector(toggleConfetti), keyEquivalent: "")
+        confettiItem.target = self
+        confettiItem.state = WeeklyLimitResetDetector.confettiEnabled() ? .on : .off
+        menu.addItem(confettiItem)
+
         // Launch at Login (toggle)
         let loginItem = NSMenuItem(title: Strings.menuLaunchAtLogin, action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         loginItem.target = self
@@ -763,6 +769,13 @@ final class StatusBarController: NSObject {
 
     @objc private func toggleAnimation() {
         animator?.isEnabled.toggle()
+    }
+
+    @objc private func toggleConfetti() {
+        let current = WeeklyLimitResetDetector.confettiEnabled()
+        UserDefaults.standard.set(!current, forKey: WeeklyLimitResetDetector.confettiEnabledKey)
+        NotificationCenter.default.post(name: .nativeSettingsChanged, object: nil)
+        NativeBridge.shared.pushSettings()
     }
 
     @objc private func toggleLaunchAtLogin() {

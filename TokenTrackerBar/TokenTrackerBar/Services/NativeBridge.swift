@@ -197,6 +197,7 @@ final class NativeBridge {
         case "confettiOnReset":
             if let bool = value as? Bool {
                 UserDefaults.standard.set(bool, forKey: WeeklyLimitResetDetector.confettiEnabledKey)
+                NotificationCenter.default.post(name: .nativeSettingsChanged, object: nil)
             }
         case "launchAtLogin":
             if let bool = value as? Bool {
