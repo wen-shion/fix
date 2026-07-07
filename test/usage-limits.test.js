@@ -310,7 +310,8 @@ describe("fetchCopilotLimits", () => {
       const result = await fetchCopilotLimits({
         home: tmp,
         platform: "darwin",
-        sqliteReader() {
+        async sqliteReader() {
+          await Promise.resolve();
           return [{
             auth_authority: "github.com",
             token_schema_version: 0,
@@ -356,6 +357,36 @@ describe("fetchCopilotLimits", () => {
       assert.equal(result.primary_window.reset_at, "2026-07-09T00:00:00.000Z");
       assert.equal(result.secondary_window.used_percent, 50);
       assert.equal(result.secondary_window.reset_at, "2026-07-09T00:00:00.000Z");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("does not call the Copilot API for non-darwin encrypted auth.db rows", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-copilot-limits-linux-encrypted-"));
+    try {
+      let readerCalled = false;
+      const result = await fetchCopilotLimits({
+        home: tmp,
+        platform: "linux",
+        async sqliteReader() {
+          readerCalled = true;
+          return [{
+            auth_authority: "github.com",
+            token_schema_version: 1,
+            token_hex: "00",
+          }];
+        },
+        securityRunner() {
+          assert.fail("non-darwin encrypted Copilot rows must not read keychain");
+        },
+        fetchImpl() {
+          assert.fail("no token should mean no Copilot API request");
+        },
+      });
+
+      assert.equal(readerCalled, true);
+      assert.equal(result.configured, false);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

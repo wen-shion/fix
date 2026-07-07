@@ -6,6 +6,7 @@ const path = require("node:path");
 const http = require("node:http");
 const https = require("node:https");
 const { performance } = require("node:perf_hooks");
+const { promisify } = require("node:util");
 
 const {
   detectClaudeCodeSubscriptionDetails,
@@ -26,7 +27,9 @@ const {
 const { fetchGrokLimits } = require("./grok-limits");
 const { fetchZcodeLimits } = require("./zcode-limits");
 const { fetchOpencodeGoLimits } = require("./opencode-go-limits");
-const { readSqliteJsonRows } = require("./sqlite-reader");
+const { readSqliteJsonRows, readSqliteJsonRowsAsync } = require("./sqlite-reader");
+
+const execFileAsync = promisify(cp.execFile);
 
 // 2-minute in-memory cache. It also expires early at the earliest upcoming window
 // reset in the cached data (see cacheExpiresAtMs), floored so a provider reporting
@@ -1489,6 +1492,32 @@ function readMacosKeychainGenericPassword({ service, account, securityRunner } =
   return trimmed.length > 0 ? trimmed : null;
 }
 
+async function readMacosKeychainGenericPasswordAsync({ service, account, securityRunner } = {}) {
+  if (typeof securityRunner === "function") {
+    return readMacosKeychainGenericPassword({ service, account, securityRunner });
+  }
+  if (!fs.existsSync(MACOS_SECURITY_BIN)) return null;
+  const args = ["find-generic-password", "-s", service];
+  if (account) args.push("-a", account);
+  args.push("-w");
+  try {
+    const result = await execFileAsync(MACOS_SECURITY_BIN, args, {
+      timeout: 2000,
+      encoding: "utf8",
+    });
+    const stdout =
+      typeof result?.stdout === "string"
+        ? result.stdout
+        : Buffer.isBuffer(result?.stdout)
+          ? result.stdout.toString("utf8")
+          : "";
+    const trimmed = stdout.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
 function decryptCopilotAuthDbToken(keyBase64, ciphertextHex) {
   if (typeof keyBase64 !== "string" || typeof ciphertextHex !== "string") return null;
   let key;
@@ -1570,16 +1599,22 @@ function orderCopilotAuthDbRows(rows) {
   return githubRows.concat(fallbackRows);
 }
 
-function readCopilotAuthDbToken({ home, platform = process.platform, securityRunner, sqliteReader } = {}) {
+function readCopilotAuthDbRows({ home, sqliteReader, asyncReader = false } = {}) {
   const resolvedHome = home || os.homedir();
   const dbPath = path.join(resolvedHome, ".config", "github-copilot", "auth.db");
-  const reader = typeof sqliteReader === "function" ? sqliteReader : readSqliteJsonRows;
-  let rows;
-  try {
-    rows = reader(dbPath, COPILOT_AUTH_DB_SQL, { label: "GitHub Copilot" });
-  } catch (_e) {
-    return null;
-  }
+  const reader = typeof sqliteReader === "function"
+    ? sqliteReader
+    : asyncReader
+      ? readSqliteJsonRowsAsync
+      : readSqliteJsonRows;
+  return reader(dbPath, COPILOT_AUTH_DB_SQL, { label: "GitHub Copilot" });
+}
+
+function resolveCopilotAuthDbTokenFromRows(rows, {
+  platform = process.platform,
+  securityRunner,
+  keychainReader = readMacosKeychainGenericPassword,
+} = {}) {
   if (!Array.isArray(rows) || rows.length === 0) return null;
   // Prefer the public github.com host (mirrors the plaintext reader); rows are
   // already ordered most-recently-used first.
@@ -1600,7 +1635,7 @@ function readCopilotAuthDbToken({ home, platform = process.platform, securityRun
     // copilot-language-server uses libsecret / Credential Manager instead, which
     // we don't read yet.
     if (!attemptedKeychain) {
-      keyBase64 = readMacosKeychainGenericPassword({
+      keyBase64 = keychainReader({
         service: COPILOT_LS_KEYCHAIN_SERVICE,
         account: COPILOT_LS_KEYCHAIN_ACCOUNT,
         securityRunner,
@@ -1614,6 +1649,60 @@ function readCopilotAuthDbToken({ home, platform = process.platform, securityRun
   return null;
 }
 
+async function resolveCopilotAuthDbTokenFromRowsAsync(rows, {
+  platform = process.platform,
+  securityRunner,
+  keychainReader = readMacosKeychainGenericPasswordAsync,
+} = {}) {
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  const orderedRows = orderCopilotAuthDbRows(rows);
+  let keyBase64 = null;
+  let attemptedKeychain = false;
+  for (const row of orderedRows) {
+    const schemaVersion = parseCopilotAuthDbSchemaVersion(row?.token_schema_version);
+    if (schemaVersion === 0) {
+      const plaintextToken = decodeCopilotSchemaV0Token(row);
+      if (plaintextToken) return plaintextToken;
+      continue;
+    }
+
+    const ciphertextHex = typeof row?.token_hex === "string" ? row.token_hex : null;
+    if (!ciphertextHex || platform !== "darwin") continue;
+    if (!attemptedKeychain) {
+      keyBase64 = await keychainReader({
+        service: COPILOT_LS_KEYCHAIN_SERVICE,
+        account: COPILOT_LS_KEYCHAIN_ACCOUNT,
+        securityRunner,
+      });
+      attemptedKeychain = true;
+    }
+    if (!keyBase64) continue;
+    const token = decryptCopilotAuthDbToken(keyBase64, ciphertextHex);
+    if (token) return token;
+  }
+  return null;
+}
+
+function readCopilotAuthDbToken({ home, platform = process.platform, securityRunner, sqliteReader } = {}) {
+  let rows;
+  try {
+    rows = readCopilotAuthDbRows({ home, sqliteReader });
+  } catch (_e) {
+    return null;
+  }
+  return resolveCopilotAuthDbTokenFromRows(rows, { platform, securityRunner });
+}
+
+async function readCopilotAuthDbTokenAsync({ home, platform = process.platform, securityRunner, sqliteReader } = {}) {
+  let rows;
+  try {
+    rows = await readCopilotAuthDbRows({ home, sqliteReader, asyncReader: true });
+  } catch (_e) {
+    return null;
+  }
+  return resolveCopilotAuthDbTokenFromRowsAsync(rows, { platform, securityRunner });
+}
+
 function readCopilotOauthToken({
   home = os.homedir(),
   platform = process.platform,
@@ -1624,6 +1713,17 @@ function readCopilotOauthToken({
   if (plaintext) return plaintext;
   // No plaintext token found — recover the live one from the encrypted auth.db.
   return readCopilotAuthDbToken({ home, platform, securityRunner, sqliteReader });
+}
+
+async function readCopilotOauthTokenAsync({
+  home = os.homedir(),
+  platform = process.platform,
+  securityRunner,
+  sqliteReader,
+} = {}) {
+  const plaintext = readPlaintextCopilotOauthToken({ home });
+  if (plaintext) return plaintext;
+  return readCopilotAuthDbTokenAsync({ home, platform, securityRunner, sqliteReader });
 }
 
 function copilotRequestHeaders(token) {
@@ -1698,7 +1798,7 @@ async function fetchCopilotLimits({
   sqliteReader,
 } = {}) {
   const otel = describeCopilotOtelStatus({ home, env });
-  const token = readCopilotOauthToken({
+  const token = await readCopilotOauthTokenAsync({
     home: home || (env.HOME || os.homedir()),
     platform,
     securityRunner,
@@ -2935,7 +3035,9 @@ module.exports = {
   fetchAntigravityLimits,
   fetchCopilotLimits,
   readCopilotOauthToken,
+  readCopilotOauthTokenAsync,
   readCopilotAuthDbToken,
+  readCopilotAuthDbTokenAsync,
   decryptCopilotAuthDbToken,
   describeCopilotOtelStatus,
   fetchGrokLimits,

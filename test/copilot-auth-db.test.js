@@ -8,6 +8,7 @@ const path = require("node:path");
 const {
   readCopilotOauthToken,
   readCopilotAuthDbToken,
+  readCopilotAuthDbTokenAsync,
   decryptCopilotAuthDbToken,
 } = require("../src/lib/usage-limits");
 
@@ -166,6 +167,54 @@ describe("readCopilotAuthDbToken", () => {
       sqliteReader: () => [],
     });
     assert.equal(token, null);
+  });
+});
+
+describe("readCopilotAuthDbTokenAsync", () => {
+  it("reads schema-v0 plaintext rows cross-platform through the async SQLite reader", async () => {
+    const expected = makeSchemaV0GithubToken();
+    let readerCalled = false;
+    const token = await readCopilotAuthDbTokenAsync({
+      home: "/home/test",
+      platform: "linux",
+      async sqliteReader() {
+        readerCalled = true;
+        await Promise.resolve();
+        return [{
+          auth_authority: "github.com",
+          token_schema_version: 0,
+          token_hex: schemaV0TokenHex(expected),
+        }];
+      },
+      securityRunner() {
+        throw new Error("schema-v0 plaintext rows must not read keychain");
+      },
+    });
+
+    assert.equal(readerCalled, true);
+    assert.equal(token, expected);
+  });
+
+  it("skips encrypted rows on non-darwin without reading the keychain", async () => {
+    const { keyBase64, tokenHex } = makeAuthDbFixture("ghu_linux_encrypted");
+    let readerCalled = false;
+    let keychainCalled = false;
+    const token = await readCopilotAuthDbTokenAsync({
+      home: "/home/test",
+      platform: "linux",
+      async sqliteReader() {
+        readerCalled = true;
+        return [{ auth_authority: "github.com", token_schema_version: 1, token_hex: tokenHex }];
+      },
+      securityRunner() {
+        keychainCalled = true;
+        return { status: 0, stdout: keyBase64 };
+      },
+    });
+
+    assert.equal(token, null);
+    assert.equal(readerCalled, true);
+    assert.equal(keychainCalled, false);
   });
 });
 
