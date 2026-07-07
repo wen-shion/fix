@@ -429,6 +429,51 @@ test("parseCopilotAppDbIncremental isolates one DB read failure without dropping
   }
 });
 
+test("parseCopilotAppDbIncremental isolates one DB fingerprint failure without dropping healthy progress", async (t) => {
+  const { dir, dbPath } = makeCopilotAppDb([
+    {
+      id: "healthy-after-fingerprint-failure",
+      session_type: "project",
+      model: "gpt-5.5",
+      created_at: "2026-07-07T14:47:00Z",
+      updated_at: "2026-07-07T14:48:00Z",
+      total_input_tokens: 100,
+      total_output_tokens: 20,
+      total_cached_tokens: 10,
+      total_reasoning_tokens: 0,
+    },
+  ]);
+  try {
+    const badDbPath = path.join(dir, "stat-fails.db");
+    const originalStatSync = fs.statSync;
+    mockMethod(t, fs, "statSync", (target, ...args) => {
+      if (target === badDbPath) {
+        const err = new Error("simulated fingerprint stat failure");
+        err.code = "EACCES";
+        throw err;
+      }
+      return originalStatSync.call(fs, target, ...args);
+    });
+
+    const queuePath = path.join(dir, "queue.jsonl");
+    const cursors = {};
+
+    const result = await parseCopilotAppDbIncremental({ dbPaths: [badDbPath, dbPath], cursors, queuePath });
+    assert.equal(result.eventsAggregated, 1);
+    assert.equal(result.dbErrors, 1);
+
+    const rows = readQueue(queuePath).filter((row) => row.source === "copilot");
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].input_tokens, 90);
+    assert.equal(rows[0].cached_input_tokens, 10);
+    assert.ok(cursors.copilotApp.dbs[dbPath].lastDbFingerprint, "healthy DB fingerprint should persist");
+    assert.equal(cursors.copilotApp.dbs[badDbPath].lastDbFingerprint, undefined);
+    assert.match(cursors.copilotApp.dbs[badDbPath].lastError, /simulated fingerprint stat failure/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("parseCopilotAppDbIncremental normalizes dotted Claude App model ids for pricing", async () => {
   const { dir, dbPath } = makeCopilotAppDb([
     {

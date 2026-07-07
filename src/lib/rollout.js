@@ -9711,15 +9711,6 @@ async function parseCopilotAppDbIncremental({
   const updatedAt = new Date().toISOString();
 
   for (const resolvedDb of uniquePaths) {
-    let currentFingerprint = null;
-    try {
-      fssync.statSync(resolvedDb);
-      currentFingerprint = sqliteSidecarFingerprint(resolvedDb);
-    } catch (e) {
-      if (e && e.code === "ENOENT") continue;
-      throw e;
-    }
-
     const dbState = dbStates[resolvedDb] && typeof dbStates[resolvedDb] === "object"
       ? dbStates[resolvedDb]
       : {};
@@ -9727,6 +9718,22 @@ async function parseCopilotAppDbIncremental({
       dbState.sessionTotals && typeof dbState.sessionTotals === "object"
         ? { ...dbState.sessionTotals }
         : {};
+    let currentFingerprint = null;
+    try {
+      fssync.statSync(resolvedDb);
+      currentFingerprint = sqliteSidecarFingerprint(resolvedDb);
+    } catch (e) {
+      if (e && e.code === "ENOENT") continue;
+      dbErrors++;
+      dbStates[resolvedDb] = {
+        ...dbState,
+        sessionTotals,
+        lastError: e && e.message ? e.message : String(e),
+        lastErrorAt: updatedAt,
+      };
+      continue;
+    }
+
     if (dbState.lastDbFingerprint && sameSqliteFingerprint(currentFingerprint, dbState.lastDbFingerprint)) {
       dbStates[resolvedDb] = { ...dbState, sessionTotals, updatedAt };
       continue;
