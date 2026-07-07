@@ -389,10 +389,10 @@ test("parseCopilotAppDbIncremental clamps cached input to raw input delta", asyn
   }
 });
 
-test("parseCopilotAppDbIncremental does not advance DB fingerprint after SQLite read failure", async () => {
+test("parseCopilotAppDbIncremental isolates one DB read failure without dropping healthy progress", async () => {
   const { dir, dbPath } = makeCopilotAppDb([
     {
-      id: "read-failure-retry",
+      id: "healthy-db-session",
       session_type: "project",
       model: "gpt-5.5",
       created_at: "2026-07-07T14:45:00Z",
@@ -404,32 +404,26 @@ test("parseCopilotAppDbIncremental does not advance DB fingerprint after SQLite 
     },
   ]);
   try {
+    const badDbPath = path.join(dir, "bad-copilot-data.db");
+    fs.writeFileSync(badDbPath, "not a sqlite database", "utf8");
     const queuePath = path.join(dir, "queue.jsonl");
     const cursors = {};
-    await assert.rejects(
-      parseCopilotAppDbIncremental({
-        dbPath,
-        cursors,
-        queuePath,
-        sqliteOptions: {
-          execFileSync() {
-            throw new Error("simulated sqlite cli read failure");
-          },
-          requireFn() {
-            throw new Error("node:sqlite DatabaseSync is unavailable");
-          },
-        },
-      }),
-      /Cannot read GitHub Copilot App SQLite database/,
-    );
-    assert.equal(cursors.copilotApp, undefined, "failed read must not mark DB fingerprint as consumed");
 
-    const retry = await parseCopilotAppDbIncremental({ dbPath, cursors, queuePath });
-    assert.equal(retry.eventsAggregated, 1);
+    const result = await parseCopilotAppDbIncremental({ dbPaths: [dbPath, badDbPath], cursors, queuePath });
+    assert.equal(result.eventsAggregated, 1);
+    assert.equal(result.dbErrors, 1);
+
     const rows = readQueue(queuePath).filter((row) => row.source === "copilot");
     assert.equal(rows.length, 1);
     assert.equal(rows[0].input_tokens, 90);
     assert.equal(rows[0].cached_input_tokens, 10);
+    assert.ok(cursors.copilotApp.dbs[dbPath].lastDbFingerprint, "healthy DB fingerprint should persist");
+    assert.equal(
+      cursors.copilotApp.dbs[badDbPath].lastDbFingerprint,
+      undefined,
+      "failed DB must not advance fingerprint so unchanged history is retried",
+    );
+    assert.match(cursors.copilotApp.dbs[badDbPath].lastError, /GitHub Copilot App SQLite database|file is not a database|database disk image is malformed/i);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

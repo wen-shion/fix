@@ -9707,6 +9707,7 @@ async function parseCopilotAppDbIncremental({
   let recordsProcessed = 0;
   let eventsAggregated = 0;
   let totalRows = 0;
+  let dbErrors = 0;
   const updatedAt = new Date().toISOString();
 
   for (const resolvedDb of uniquePaths) {
@@ -9731,12 +9732,22 @@ async function parseCopilotAppDbIncremental({
       continue;
     }
 
-    const snap = snapshotSqliteDb(resolvedDb);
+    let snap = null;
     let rows = [];
     try {
+      snap = snapshotSqliteDb(resolvedDb);
       rows = readCopilotAppSessionsFromSqlite(snap.path, sqliteOptions);
+    } catch (err) {
+      dbErrors++;
+      dbStates[resolvedDb] = {
+        ...dbState,
+        sessionTotals,
+        lastError: err && err.message ? err.message : String(err),
+        lastErrorAt: updatedAt,
+      };
+      continue;
     } finally {
-      snap.cleanup();
+      if (snap) snap.cleanup();
     }
     totalRows += rows.length;
 
@@ -9795,6 +9806,8 @@ async function parseCopilotAppDbIncremental({
       ...dbState,
       sessionTotals,
       lastDbFingerprint: currentFingerprint,
+      lastError: null,
+      lastErrorAt: null,
       updatedAt,
     };
   }
@@ -9809,7 +9822,7 @@ async function parseCopilotAppDbIncremental({
     updatedAt,
   };
 
-  return { recordsProcessed, eventsAggregated, bucketsQueued };
+  return { recordsProcessed, eventsAggregated, bucketsQueued, dbErrors };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
