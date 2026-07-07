@@ -349,7 +349,7 @@ async function cmdSync(argv) {
       });
     }
 
-    const codexColdSkipEnabled = opts.auto && isFullSourceScan && sourceAllowed("codex");
+    const codexColdSkipEnabled = opts.auto && (isFullSourceScan || isBackgroundLightweightSync) && sourceAllowed("codex");
     const codexColdAuditDue = codexColdSkipEnabled
       ? isCodexColdScanAuditDue(cursors)
       : false;

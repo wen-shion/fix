@@ -629,6 +629,12 @@ test("lightweight flag is an alias for bounded background sync", async () => {
 test("second unchanged background sync does not deep-read archive descendants or change queue", async () => {
   await withTempSyncEnv(async (home) => {
     const codexHome = process.env.CODEX_HOME;
+    const historicalRolloutPath = await writeCodexRollout(
+      codexHome,
+      "2026-01-01",
+      "019f16bd-6bb0-7777-8888-999999999999",
+      17,
+    );
     await writeCodexRollout(
       codexHome,
       "2026-06-30",
@@ -647,14 +653,23 @@ test("second unchanged background sync does not deep-read archive descendants or
     const before = await fs.readFile(queuePath, "utf8");
 
     const archiveRoot = path.join(codexHome, "archived_sessions");
-    const { count } = await countReaddir(
-      () => cmdSync(["--auto", "--background"]),
+    const { count: archiveReads, value: historicalStats } = await countReaddir(
+      () => countStat(
+        () => cmdSync(["--auto", "--background"]),
+        (target) => target === historicalRolloutPath,
+      ),
       (target) => target.startsWith(`${archiveRoot}${path.sep}`),
     );
     const after = await fs.readFile(queuePath, "utf8");
 
-    assert.equal(count, 0, "second background sync must not readdir descendants under archived_sessions");
+    assert.equal(archiveReads, 0, "second background sync must not readdir descendants under archived_sessions");
+    assert.equal(
+      historicalStats.count,
+      0,
+      "second background sync must cold-skip already parsed historical Codex rollout files",
+    );
     assert.equal(after, before, "idle background sync must leave Codex queue output stable");
+    assert.match(after, /"total_tokens":17/);
     assert.match(after, /"total_tokens":41/);
     assert.doesNotMatch(after, /"total_tokens":67/);
   });
