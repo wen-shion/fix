@@ -267,18 +267,22 @@ export const GALAXY_VERTEX = /* glsl */ `
     vec3 bh_cam = (modelViewMatrix * vec4(0.0, uYOffset, 0.0, 1.0)).xyz;
     vec2 toParticle = mv.xy - bh_cam.xy;
     float r_cam = length(toParticle);
-    if (r_cam > 0.01) {
-      float R_horizon = 0.85;
+    if (r_cam > 0.001) {
+      float R_E = 1.35;
+      float R_horizon = 0.65;
+      
       // Fade out particles that fall below the event horizon
-      float horizonFade = smoothstep(0.4, R_horizon, r_cam);
+      float horizonFade = smoothstep(0.2, R_horizon, r_cam);
       alpha *= horizonFade;
       
-      // Deflect particles around the event horizon (isotropic camera-space deflection)
-      if (r_cam < R_horizon * 4.0) {
-        float deflection = 0.45 * R_horizon * R_horizon / (r_cam - R_horizon * 0.7);
-        mv.xy += normalize(toParticle) * deflection;
-        mv.z += deflection * 0.4; // warp depth forward
-      }
+      // Point-mass Einstein Ring gravitational lensing formula
+      float r_lensed = 0.5 * (r_cam + sqrt(r_cam * r_cam + 4.0 * R_E * R_E));
+      
+      // Shift particles to their lensed coordinates on the screen plane
+      mv.xy = bh_cam.xy + toParticle * (r_lensed / r_cam);
+      
+      // Warp Z coordinate forward proportional to the lensing shift
+      mv.z += (r_lensed - r_cam) * 0.35;
     }
 
     gl_Position = projectionMatrix * mv;
