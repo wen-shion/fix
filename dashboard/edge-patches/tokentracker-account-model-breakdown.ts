@@ -246,6 +246,13 @@ const MODEL_PRICING: Record<string, { input: number; output: number; cache_read:
   //    RMB 5/0.10/20 once the promo ends — re-verify before changing. No
   //    cache-write surcharge published, so cache_write = input. ──
   "longcat-2.0": { input: 0.278, output: 1.111, cache_read: 0.00556, cache_write: 0.278 },
+  // ── StepFun Step 3.5/3.7 Flash (#283; mirrored from
+  //    src/lib/pricing/curated-overrides.json). Official platform.stepfun.ai
+  //    rates: 3.7-flash $0.20/$0.04(cache hit)/$1.15 per MTok in/read/out,
+  //    3.5-flash $0.10/$0.02/$0.30. No cache-write surcharge published, so
+  //    cache_write = input. ──
+  "step-3.7-flash": { input: 0.2, output: 1.15, cache_read: 0.04, cache_write: 0.2 },
+  "step-3.5-flash": { input: 0.1, output: 0.3, cache_read: 0.02, cache_write: 0.1 },
 };
 const ZERO_PRICING = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
 
@@ -320,6 +327,11 @@ function getModelPricing(model: string) {
   if (lower.includes("composer")) return MODEL_PRICING["composer-1"];
   if (lower.includes("fugu")) return MODEL_PRICING["sakana/fugu-ultra"];
   if (lower.includes("longcat")) return MODEL_PRICING["longcat-2.0"];
+  // StepFun ordering: dated snapshots (step-3.5-flash-2603) hit the specific
+  // matchers; bare "stepfun" (e.g. openrouter stepfun/…) falls back to 3.7.
+  if (lower.includes("step-3.7-flash")) return MODEL_PRICING["step-3.7-flash"];
+  if (lower.includes("step-3.5-flash")) return MODEL_PRICING["step-3.5-flash"];
+  if (lower.includes("stepfun")) return MODEL_PRICING["step-3.7-flash"];
   if (lower === "auto") return MODEL_PRICING["composer-1"];
   return ZERO_PRICING;
 }

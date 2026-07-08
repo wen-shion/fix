@@ -19,6 +19,7 @@ const {
   parseListeningPorts,
   detectAntigravityProcess,
   fetchAntigravityLimits,
+  fetchCopilotLimits,
 } = require("../src/lib/usage-limits");
 
 // Match a fetch URL by host (exact or subdomain) rather than substring, so the
@@ -291,6 +292,106 @@ function writeCodexAuth(tmp, planType = "plus", extraTokens = {}) {
 function inactiveRunner() {
   return { status: 1, stdout: "" };
 }
+
+function makeCopilotTestToken() {
+  return ["gho", "1234567890abcdef1234567890abcdef1234"].join("_");
+}
+
+function copilotTokenHex(token = makeCopilotTestToken()) {
+  return Buffer.from(token, "utf8").toString("hex");
+}
+
+describe("fetchCopilotLimits", () => {
+  it("fetches Copilot limits with a schema-v0 auth.db token", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-copilot-limits-v0-"));
+    try {
+      const token = makeCopilotTestToken();
+      let observedAuthorization = "";
+      const result = await fetchCopilotLimits({
+        home: tmp,
+        platform: "darwin",
+        async sqliteReader() {
+          await Promise.resolve();
+          return [{
+            auth_authority: "github.com",
+            token_schema_version: 0,
+            token_hex: copilotTokenHex(token),
+          }];
+        },
+        securityRunner() {
+          assert.fail("schema-v0 Copilot tokens must not require keychain access");
+        },
+        fetchImpl(url, options) {
+          assert.equal(url, "https://api.github.com/copilot_internal/user");
+          observedAuthorization = options?.headers?.Authorization || "";
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            async json() {
+              return {
+                copilot_plan: "individual",
+                quota_reset_date: "2026-07-09",
+                quota_snapshots: {
+                  premium_interactions: {
+                    entitlement: 100,
+                    remaining: 75,
+                    percent_remaining: 75,
+                  },
+                  chat: {
+                    entitlement: 200,
+                    remaining: 100,
+                    percent_remaining: 50,
+                  },
+                },
+              };
+            },
+          });
+        },
+      });
+
+      assert.equal(observedAuthorization, `token ${token}`);
+      assert.equal(result.configured, true);
+      assert.equal(result.error, null);
+      assert.equal(result.plan_name, "Individual");
+      assert.equal(result.primary_window.used_percent, 25);
+      assert.equal(result.primary_window.reset_at, "2026-07-09T00:00:00.000Z");
+      assert.equal(result.secondary_window.used_percent, 50);
+      assert.equal(result.secondary_window.reset_at, "2026-07-09T00:00:00.000Z");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("does not call the Copilot API for non-darwin encrypted auth.db rows", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-copilot-limits-linux-encrypted-"));
+    try {
+      let readerCalled = false;
+      const result = await fetchCopilotLimits({
+        home: tmp,
+        platform: "linux",
+        async sqliteReader() {
+          readerCalled = true;
+          return [{
+            auth_authority: "github.com",
+            token_schema_version: 1,
+            token_hex: "00",
+          }];
+        },
+        securityRunner() {
+          assert.fail("non-darwin encrypted Copilot rows must not read keychain");
+        },
+        fetchImpl() {
+          assert.fail("no token should mean no Copilot API request");
+        },
+      });
+
+      assert.equal(readerCalled, true);
+      assert.equal(result.configured, false);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
 
 const CODEX_WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const CODEX_RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";

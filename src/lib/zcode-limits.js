@@ -1,8 +1,11 @@
 const fs = require("node:fs");
+const crypto = require("node:crypto");
 const os = require("node:os");
 const path = require("node:path");
 
 const DEFAULT_BILLING_BASE_URL = "https://zcode.z.ai/api/v1/zcode-plan";
+const DEFAULT_ZCODE_APP_VERSION = "3.2.5";
+const DEFAULT_ZCODE_LOG_FALLBACK_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 function resolveZcodeHome({ home, env = process.env } = {}) {
   if (typeof env.TOKENTRACKER_ZCODE_HOME === "string" && env.TOKENTRACKER_ZCODE_HOME.trim()) {
@@ -23,6 +26,51 @@ function resolveZcodeBillingBaseUrl(env = process.env) {
   return DEFAULT_BILLING_BASE_URL;
 }
 
+function parsePositiveInteger(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+function readZcodeAppVersionFromPlist(plistPath) {
+  try {
+    if (!fs.existsSync(plistPath)) return null;
+    const text = fs.readFileSync(plistPath, "utf8");
+    const keyIndex = text.indexOf("<key>CFBundleShortVersionString</key>");
+    if (keyIndex < 0) return null;
+    const match = text.slice(keyIndex).match(/<string>([^<]+)<\/string>/);
+    const version = typeof match?.[1] === "string" ? match[1].trim() : "";
+    return version || null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function resolveZcodeAppVersion({ home, env = process.env } = {}) {
+  const explicit =
+    typeof env.TOKENTRACKER_ZCODE_APP_VERSION === "string"
+      ? env.TOKENTRACKER_ZCODE_APP_VERSION.trim()
+      : "";
+  if (explicit) return explicit;
+
+  const appPath =
+    typeof env.TOKENTRACKER_ZCODE_APP_PATH === "string" && env.TOKENTRACKER_ZCODE_APP_PATH.trim()
+      ? env.TOKENTRACKER_ZCODE_APP_PATH.trim()
+      : null;
+  const candidates = appPath
+    ? [path.join(appPath, "Contents", "Info.plist")]
+    : [
+        "/Applications/ZCode.app/Contents/Info.plist",
+        path.join(home || os.homedir(), "Applications", "ZCode.app", "Contents", "Info.plist"),
+      ];
+  for (const plistPath of candidates) {
+    const version = readZcodeAppVersionFromPlist(plistPath);
+    if (version) return version;
+  }
+  // The API currently rejects balance requests without app_version. The value is
+  // not used for local accounting, so keep a conservative fallback for CLI-only installs.
+  return DEFAULT_ZCODE_APP_VERSION;
+}
+
 function isZcodeInstalled({ home, env } = {}) {
   const zcodeHome = resolveZcodeHome({ home, env });
   const configPath = path.join(zcodeHome, "v2", "config.json");
@@ -31,32 +79,171 @@ function isZcodeInstalled({ home, env } = {}) {
   return fs.existsSync(dbPath);
 }
 
-function loadZcodeApiKey({ home, env } = {}) {
+function loadZcodeProviderAvailability({ home, env } = {}) {
+  const zcodeHome = resolveZcodeHome({ home, env });
+  const cachePath = path.join(zcodeHome, "v2", "coding-plan-cache.json");
+  if (!fs.existsSync(cachePath)) return {};
+  try {
+    const cache = JSON.parse(fs.readFileSync(cachePath, "utf8"));
+    const items = cache?.entryStatus?.items;
+    return items && typeof items === "object" ? items : {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+function resolveZcodeCredentialsPath({ home, env } = {}) {
+  return path.join(resolveZcodeHome({ home, env }), "v2", "credentials.json");
+}
+
+function createZcodeCredentialSecret({ home, env = process.env } = {}) {
+  if (typeof env.ZCODE_CREDENTIAL_SECRET === "string" && env.ZCODE_CREDENTIAL_SECRET) {
+    return env.ZCODE_CREDENTIAL_SECRET;
+  }
+  let username = "";
+  try {
+    username = os.userInfo().username || "";
+  } catch (_error) {
+    username = "";
+  }
+  return `zcode-credential-fallback:${process.platform}:${home || os.homedir()}:${username}`;
+}
+
+function decryptZcodeCredentialValue(value, { home, env } = {}) {
+  if (typeof value !== "string") return null;
+  if (!value.startsWith("enc:v1:")) return value;
+  const encoded = value.slice("enc:v1:".length);
+  const parts = encoded.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    const [ivPart, tagPart, encryptedPart] = parts;
+    const iv = Buffer.from(ivPart, "base64url");
+    const encrypted = Buffer.from(encryptedPart, "base64url");
+    const tag = Buffer.from(tagPart, "base64url");
+    const key = crypto.createHash("sha256").update(createZcodeCredentialSecret({ home, env })).digest();
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8");
+  } catch (_error) {
+    return null;
+  }
+}
+
+function loadZcodeCredentials({ home, env } = {}) {
+  const credentialsPath = resolveZcodeCredentialsPath({ home, env });
+  if (!fs.existsSync(credentialsPath)) return {};
+  try {
+    const raw = JSON.parse(fs.readFileSync(credentialsPath, "utf8"));
+    return raw && typeof raw === "object" ? raw : {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+function loadZcodeCredential(name, { home, env } = {}) {
+  const credentials = loadZcodeCredentials({ home, env });
+  const decrypted = decryptZcodeCredentialValue(credentials?.[name], { home, env });
+  return typeof decrypted === "string" && decrypted.trim() ? decrypted.trim() : "";
+}
+
+function loadZcodeActiveProvider({ home, env } = {}) {
+  return loadZcodeCredential("oauth:active_provider", { home, env });
+}
+
+function resolveZcodeCredentialAuth(providerKey, { home, env } = {}) {
+  const activeProvider = loadZcodeActiveProvider({ home, env });
+  if (
+    (providerKey === "builtin:zai-start-plan" && activeProvider === "zai") ||
+    (providerKey === "builtin:bigmodel-start-plan" && activeProvider === "bigmodel")
+  ) {
+    return loadZcodeCredential("zcodejwttoken", { home, env });
+  }
+  return "";
+}
+
+function isZcodeBuiltinPlanProvider(providerKey) {
+  return /^builtin:(bigmodel|zai)-(start|coding)-plan$/.test(providerKey);
+}
+
+function resolveZcodeProviderBillingBaseUrl(providerKey, provider, env = process.env) {
+  const explicit = resolveZcodeBillingBaseUrl(env);
+  if (explicit !== DEFAULT_BILLING_BASE_URL) return explicit;
+  if (isZcodeBuiltinPlanProvider(providerKey)) return DEFAULT_BILLING_BASE_URL;
+  const baseUrl = typeof provider?.options?.baseURL === "string" ? provider.options.baseURL.trim() : "";
+  if (/\/zcode-plan\/anthropic\/?$/i.test(baseUrl)) return baseUrl.replace(/\/anthropic\/?$/i, "");
+  return null;
+}
+
+function loadZcodeAuthCandidates({ home, env } = {}) {
   const zcodeHome = resolveZcodeHome({ home, env });
   const configPath = path.join(zcodeHome, "v2", "config.json");
-  if (!fs.existsSync(configPath)) return null;
+  if (!fs.existsSync(configPath)) return [];
   try {
     const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-    if (!config || typeof config !== "object") return null;
+    if (!config || typeof config !== "object") return [];
     const providers = config.provider || {};
-    // Try the active start-plan first, then coding-plan variants
-    const candidates = [
+    const defaultCandidates = [
       "builtin:bigmodel-start-plan",
       "builtin:zai-start-plan",
       "builtin:bigmodel-coding-plan",
       "builtin:zai-coding-plan",
     ];
+    const availability = loadZcodeProviderAvailability({ home, env });
+    const hasAvailability = Object.keys(availability).length > 0;
+    const availableCandidates = defaultCandidates.filter((key) => availability?.[key]?.status === "available");
+    const candidates = [...availableCandidates, ...defaultCandidates.filter((key) => !availableCandidates.includes(key))];
+    const auths = [];
     for (const key of candidates) {
       const provider = providers[key];
       if (!provider || typeof provider !== "object") continue;
       if (provider.enabled === false) continue;
+      if (hasAvailability && availability?.[key]?.status && availability[key].status !== "available") continue;
       const apiKey = typeof provider?.options?.apiKey === "string" ? provider.options.apiKey.trim() : "";
-      if (apiKey) return { apiKey, providerKey: key, baseUrl: provider?.options?.baseURL || null };
+      const billingBaseUrl = resolveZcodeProviderBillingBaseUrl(key, provider, env);
+      const credentialApiKey = resolveZcodeCredentialAuth(key, { home, env });
+      const authEntries = [
+        credentialApiKey ? { apiKey: credentialApiKey, authSource: "credential:zcodejwttoken" } : null,
+        apiKey ? { apiKey, authSource: "provider:config" } : null,
+      ].filter(Boolean);
+      const seenKeys = new Set();
+      for (const entry of authEntries) {
+        if (!billingBaseUrl || seenKeys.has(entry.apiKey)) continue;
+        seenKeys.add(entry.apiKey);
+        auths.push({
+          apiKey: entry.apiKey,
+          auth_source: entry.authSource,
+          providerKey: key,
+          baseUrl: provider?.options?.baseURL || null,
+          billingBaseUrl,
+          availability: availability?.[key]?.status || null,
+        });
+      }
     }
-    return null;
+    return auths;
   } catch (_error) {
-    return null;
+    return [];
   }
+}
+
+function loadZcodeApiKey({ home, env } = {}) {
+  return loadZcodeAuthCandidates({ home, env })[0] || null;
+}
+
+function buildZcodeSourceHeaders({ home, env } = {}) {
+  const headers = {
+    "User-Agent": `ZCode/${resolveZcodeAppVersion({ home, env })}`,
+    "HTTP-Referer": "https://zcode.z.ai/",
+    "X-ZCode-App-Version": resolveZcodeAppVersion({ home, env }),
+    "X-Platform": process.platform,
+    "X-Release-Channel": "stable",
+    "X-Client-Language": Intl.DateTimeFormat().resolvedOptions().locale || "en-US",
+    "X-Client-Timezone": Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    "X-Os-Category": process.platform,
+    "X-Os-Version": os.release(),
+  };
+  const deviceMid = loadZcodeCredential("zcodefeedbackclientid", { home, env });
+  if (deviceMid) headers["X-Device-Mid"] = deviceMid;
+  return headers;
 }
 
 function zcodeValNumber(value) {
@@ -108,7 +295,14 @@ function normalizeZcodeBalanceResponse(body) {
 
   const balances = Array.isArray(data.balances) ? data.balances : [];
   if (!balances.length) {
-    throw new Error("Could not parse ZCode balance: no balance buckets");
+    return {
+      server_time: zcodeValNumber(data.server_time),
+      plan_id: null,
+      plan_label: null,
+      buckets: [],
+      primary_window: null,
+      secondary_window: null,
+    };
   }
 
   const serverTime = zcodeValNumber(data.server_time);
@@ -150,61 +344,202 @@ function normalizeZcodeBalanceResponse(body) {
   };
 }
 
-async function fetchZcodeBilling(apiKey, { fetchImpl = fetch, baseUrl, env } = {}) {
+async function fetchZcodeBilling(apiKey, { fetchImpl = fetch, baseUrl, env, home } = {}) {
   const root = (baseUrl || resolveZcodeBillingBaseUrl(env)).replace(/\/$/, "");
-  const res = await fetchImpl(`${root}/billing/balance`, {
+  const url = new URL(`${root}/billing/balance`);
+  const appVersion = resolveZcodeAppVersion({ home, env });
+  if (appVersion) url.searchParams.set("app_version", appVersion);
+  const headers = {
+    Authorization: `Bearer ${apiKey}`,
+    Accept: "application/json",
+  };
+  if (url.origin === new URL(DEFAULT_BILLING_BASE_URL).origin) {
+    Object.assign(headers, buildZcodeSourceHeaders({ home, env }));
+  }
+  const res = await fetchImpl(url.toString(), {
     method: "GET",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      Accept: "application/json",
-    },
+    headers,
   });
   if (res.status === 401 || res.status === 403) {
     throw new Error("Not authenticated with ZCode. Run `zcode` in Terminal to log in.");
   }
   if (!res.ok) {
-    throw new Error(`ZCode billing API returned ${res.status}`);
+    let detail = "";
+    try {
+      const body = await res.json();
+      if (body && typeof body === "object") {
+        const code = body.code != null ? ` code=${body.code}` : "";
+        const msg = body.msg ? ` msg=${body.msg}` : "";
+        detail = `${code}${msg}`;
+      }
+    } catch (_error) {
+      detail = "";
+    }
+    throw new Error(`ZCode billing API returned ${res.status}${detail}`);
   }
   return res.json();
 }
 
-async function fetchZcodeLimits({ home, env, fetchImpl = fetch } = {}) {
+function parseZcodeLogTimestamp(line) {
+  const match = line.match(/^\[(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})\.(\d{3})\]/);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second, ms] = match;
+  const timestamp = new Date(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second),
+    Number(ms),
+  );
+  const time = timestamp.getTime();
+  return Number.isFinite(time) ? time : null;
+}
+
+function formatZcodeLogDate(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function recentZcodeLogPaths({ home, env, nowMs = Date.now() } = {}) {
+  const logsDir = path.join(resolveZcodeHome({ home, env }), "v2", "logs");
+  const today = new Date(nowMs);
+  const yesterday = new Date(nowMs - 24 * 60 * 60 * 1000);
+  return [today, yesterday].map((d) => path.join(logsDir, `${formatZcodeLogDate(d)}.log`));
+}
+
+function extractZcodeBalanceLogRecord(line) {
+  if (!line.includes("[usage-stats] billing/balance 请求完成")) return null;
+  const jsonStart = line.indexOf("{");
+  if (jsonStart < 0) return null;
+  try {
+    const entry = JSON.parse(line.slice(jsonStart));
+    const body = entry?.payload;
+    if (!entry?.success || entry?.code !== 0 || !body || body?.code !== 0) return null;
+    if (!Array.isArray(body?.data?.balances) || body.data.balances.length === 0) return null;
+    const timestampMs = parseZcodeLogTimestamp(line);
+    if (timestampMs == null) return null;
+    return {
+      body,
+      providerKey: typeof entry.providerId === "string" ? entry.providerId : null,
+      timestampMs,
+      log_timestamp: new Date(timestampMs).toISOString(),
+    };
+  } catch (_error) {
+    return null;
+  }
+}
+
+function loadLatestZcodeBalanceFromLogs({ home, env = process.env, providerKeys = [], nowMs = Date.now() } = {}) {
+  if (env.TOKENTRACKER_ZCODE_DISABLE_LOG_FALLBACK === "1") return null;
+  const maxAgeMs = parsePositiveInteger(env.TOKENTRACKER_ZCODE_LOG_MAX_AGE_MS, DEFAULT_ZCODE_LOG_FALLBACK_MAX_AGE_MS);
+  const preferredProviders = new Set(providerKeys.filter(Boolean));
+  let preferred = null;
+  let fallback = null;
+  for (const logPath of recentZcodeLogPaths({ home, env, nowMs })) {
+    if (!fs.existsSync(logPath)) continue;
+    let text = "";
+    try {
+      text = fs.readFileSync(logPath, "utf8");
+    } catch (_error) {
+      continue;
+    }
+    const lines = text.split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      const record = extractZcodeBalanceLogRecord(lines[i]);
+      if (!record) continue;
+      const ageMs = nowMs - record.timestampMs;
+      if (ageMs < 0 || ageMs > maxAgeMs) continue;
+      if (!fallback || record.timestampMs > fallback.timestampMs) fallback = record;
+      if (preferredProviders.has(record.providerKey) && (!preferred || record.timestampMs > preferred.timestampMs)) {
+        preferred = record;
+      }
+    }
+  }
+  return preferred || fallback;
+}
+
+function zcodeLogFallbackResult(logRecord, errors = []) {
+  if (!logRecord) return null;
+  return {
+    configured: true,
+    error: null,
+    source: "zcode-log",
+    provider_key: logRecord.providerKey,
+    log_timestamp: logRecord.log_timestamp,
+    provider_errors: errors,
+    ...normalizeZcodeBalanceResponse(logRecord.body),
+  };
+}
+
+async function fetchZcodeLimits({ home, env, fetchImpl = fetch, nowMs = Date.now() } = {}) {
   if (!isZcodeInstalled({ home, env })) {
     return { configured: false };
   }
-  const auth = loadZcodeApiKey({ home, env });
-  if (!auth) {
+  const authCandidates = loadZcodeAuthCandidates({ home, env });
+  if (!authCandidates.length) {
+    const logFallback = loadLatestZcodeBalanceFromLogs({ home, env, nowMs });
+    if (logFallback) return zcodeLogFallbackResult(logFallback, []);
     return { configured: false };
   }
-  try {
-    const body = await fetchZcodeBilling(auth.apiKey, {
-      fetchImpl,
-      // Coding-plan baseURL is ".../zcode-plan/anthropic"; strip the trailing
-      // "/anthropic" (with or without a trailing slash) to reach the billing root.
-      baseUrl: auth.baseUrl ? auth.baseUrl.replace(/\/anthropic\/?$/, "") : undefined,
-      env,
-    });
-    const apiCode = typeof body?.code === "number" ? body.code : null;
-    if (apiCode !== null && apiCode !== 0) {
-      throw new Error(`ZCode billing API error: code=${apiCode} msg=${body?.msg || "unknown"}`);
+  const errors = [];
+  let emptySuccess = null;
+  for (const auth of authCandidates) {
+    try {
+      const body = await fetchZcodeBilling(auth.apiKey, {
+        fetchImpl,
+        baseUrl: auth.billingBaseUrl,
+        env,
+        home,
+      });
+      const apiCode = typeof body?.code === "number" ? body.code : null;
+      if (apiCode !== null && apiCode !== 0) {
+        throw new Error(`ZCode billing API error: code=${apiCode} msg=${body?.msg || "unknown"}`);
+      }
+      const normalized = normalizeZcodeBalanceResponse(body);
+      const result = {
+        configured: true,
+        error: null,
+        provider_key: auth.providerKey,
+        ...normalized,
+      };
+      if (Array.isArray(normalized.buckets) && normalized.buckets.length === 0 && authCandidates.length > 1) {
+        emptySuccess = emptySuccess || result;
+        continue;
+      }
+      return result;
+    } catch (error) {
+      errors.push(`${auth.providerKey}: ${error?.message || "Unknown error"}`);
     }
-    return {
-      configured: true,
-      error: null,
-      ...normalizeZcodeBalanceResponse(body),
-    };
-  } catch (error) {
-    return {
-      configured: true,
-      error: error?.message || "Unknown error",
-    };
   }
+  if (emptySuccess) return emptySuccess;
+  const logFallback = loadLatestZcodeBalanceFromLogs({
+    home,
+    env,
+    providerKeys: authCandidates.map((auth) => auth.providerKey),
+    nowMs,
+  });
+  if (logFallback) return zcodeLogFallbackResult(logFallback, errors);
+  return {
+    configured: true,
+    error: errors[0] || "Unknown error",
+    provider_errors: errors,
+  };
 }
 
 module.exports = {
   resolveZcodeHome,
   resolveZcodeBillingBaseUrl,
+  resolveZcodeAppVersion,
   isZcodeInstalled,
+  loadZcodeProviderAvailability,
+  loadZcodeCredential,
+  loadLatestZcodeBalanceFromLogs,
+  resolveZcodeProviderBillingBaseUrl,
+  loadZcodeAuthCandidates,
   loadZcodeApiKey,
   deriveZcodePlanLabel,
   normalizeZcodeBalanceResponse,
