@@ -312,6 +312,124 @@ function pendingUnlessCodexReset(url) {
   return new Promise(() => {});
 }
 
+describe("getUsageLimits claude data-age fields (stale + cached_at)", () => {
+  const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+
+  function writeClaudeCreds(home, token) {
+    const dir = path.join(home, ".claude");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { accessToken: token } }),
+    );
+  }
+
+  it("stamps a live Claude read with stale:false and a fresh cached_at", async () => {
+    resetUsageLimitsCache();
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-limits-claude-live-"));
+    try {
+      writeClaudeCreds(tmp, "sk-ant-oauth-live");
+      const before = Date.now();
+      const result = await getUsageLimits({
+        home: tmp,
+        platform: "linux",
+        providerTimeoutMs: 2000,
+        securityRunner() { return { status: 1, stdout: "" }; },
+        commandRunner() { return { status: 1, stdout: "" }; },
+        fetchImpl(url) {
+          if (url === CLAUDE_USAGE_URL) {
+            return Promise.resolve({
+              ok: true,
+              status: 200,
+              headers: { get: () => null },
+              json: async () => ({
+                five_hour: { utilization: 7, resets_at: new Date(Date.now() + 3_600_000).toISOString() },
+                seven_day: { utilization: 40, resets_at: new Date(Date.now() + 86_400_000).toISOString() },
+              }),
+            });
+          }
+          return Promise.reject(new Error("unmocked"));
+        },
+      });
+
+      assert.equal(result.claude.configured, true);
+      assert.equal(result.claude.error, null);
+      assert.equal(result.claude.stale, false, "a live read must be marked fresh");
+      assert.ok(result.claude.cached_at, "live read must carry a cached_at stamp");
+      const cachedMs = Date.parse(result.claude.cached_at);
+      assert.ok(
+        cachedMs >= before && cachedMs <= Date.now() + 1000,
+        "cached_at must be stamped at fetch time",
+      );
+      assert.equal(
+        result.claude.retry_at,
+        undefined,
+        "a successful live read clears the cooldown, so no retry_at is exposed",
+      );
+    } finally {
+      resetUsageLimitsCache();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("serves the disk cache with stale:true and its original cached_at when the live read 429s", async () => {
+    resetUsageLimitsCache();
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-limits-claude-stale-"));
+    try {
+      writeClaudeCreds(tmp, "sk-ant-oauth-stale");
+      // Seed a last-successful snapshot ~1h old (older than the 10-min fresh TTL, so a
+      // live call is still attempted) with a still-future reset (so the window stays usable).
+      const cacheDir = path.join(tmp, ".tokentracker", "tracker");
+      fs.mkdirSync(cacheDir, { recursive: true });
+      const seededCachedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      fs.writeFileSync(
+        path.join(cacheDir, "claude-usage-limits-cache.json"),
+        JSON.stringify({
+          claude: {
+            five_hour: { utilization: 55, resets_at: new Date(Date.now() + 3_600_000).toISOString() },
+            seven_day: null,
+            seven_day_opus: null,
+            weekly_scoped: null,
+            extra_usage: null,
+            cached_at: seededCachedAt,
+          },
+        }),
+      );
+
+      const result = await getUsageLimits({
+        home: tmp,
+        platform: "linux",
+        providerTimeoutMs: 2000,
+        securityRunner() { return { status: 1, stdout: "" }; },
+        commandRunner() { return { status: 1, stdout: "" }; },
+        fetchImpl(url) {
+          if (url === CLAUDE_USAGE_URL) {
+            return Promise.resolve({
+              ok: false,
+              status: 429,
+              headers: { get: (k) => (k === "retry-after" ? "3600" : null) },
+              json: async () => ({}),
+            });
+          }
+          return Promise.reject(new Error("unmocked"));
+        },
+      });
+
+      assert.equal(result.claude.configured, true);
+      assert.equal(result.claude.error, null, "stale cache must be served instead of a red error");
+      assert.equal(result.claude.stale, true, "cache fallback must be marked stale");
+      assert.equal(result.claude.cached_at, seededCachedAt, "stale read must preserve the original cached_at");
+      assert.equal(result.claude.five_hour.utilization, 55);
+      assert.ok(result.claude.retry_at, "an active cooldown must expose retry_at for the client");
+      const retryMs = Date.parse(result.claude.retry_at);
+      assert.ok(retryMs > Date.now(), "retry_at must be a future instant");
+    } finally {
+      resetUsageLimitsCache();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("getUsageLimits", () => {
   it("classifies a 5h session window into primary regardless of slot position", async () => {
     resetUsageLimitsCache();
@@ -374,6 +492,9 @@ describe("getUsageLimits", () => {
         limit_window_seconds: 604800,
         reset_at: 99999,
       });
+      // A live read carries the data-age fields the UI uses for "Updated Xm ago".
+      assert.equal(result.codex.stale, false, "a live Codex read must be marked fresh");
+      assert.ok(result.codex.cached_at, "live Codex read must carry a cached_at stamp");
     } finally {
       resetUsageLimitsCache();
       fs.rmSync(tmp, { recursive: true, force: true });

@@ -107,6 +107,30 @@ enum Strings {
         let time = codexResetBankExpiryDateTime(date)
         return t("Resets \(time)", "重置于 \(time)", "重置於 \(time)", "\(time) にリセット", "\(time)에 초기화")
     }
+    /// How long ago a limits snapshot was last fetched, e.g. "Updated 2h ago" or
+    /// "Updated just now". Shown in the provider info popover; rendered amber when
+    /// the data is a stale fallback (a 429 cool-down suppressed the live refresh).
+    static func limitsUpdatedRelative(secondsAgo seconds: TimeInterval) -> String {
+        if seconds < 60 {
+            return t("Updated just now", "刚刚更新", "剛剛更新", "たった今更新", "방금 업데이트됨")
+        }
+        let hours = Int(seconds) / 3600
+        let rel: String
+        if hours > 24 {
+            rel = "\(hours / 24)d"
+        } else if hours > 0 {
+            rel = "\(hours)h"
+        } else {
+            rel = "\(Int(seconds) / 60)m"
+        }
+        return t("Updated \(rel) ago", "\(rel)前更新", "\(rel)前更新", "\(rel)前に更新", "\(rel) 전 업데이트됨")
+    }
+    /// When a rate-limited panel will next attempt a refresh, e.g. "Retrying 7/7 11:11".
+    /// Shown beneath the updated line while a 429 cool-down is pending.
+    static func limitsRetryingAt(_ date: Date) -> String {
+        let time = codexResetBankExpiryDateTime(date)
+        return t("Retrying \(time)", "将于 \(time) 重试", "將於 \(time) 重試", "\(time) に再試行", "\(time)에 재시도")
+    }
     /// Hover tooltip for one reset-bank row: expiry instant + whole days left.
     static func resetCreditExpiryDetail(expiry: String, daysLeft: Int) -> String {
         if daysLeft <= 0 {

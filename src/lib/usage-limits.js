@@ -2760,6 +2760,12 @@ async function fetchUsageLimitsUncached({
       seven_day_opus: claudeResult.value.seven_day_opus,
       weekly_scoped: claudeResult.value.weekly_scoped,
       extra_usage: claudeResult.value.extra_usage,
+      // A live read is current as of now. `stale`/`cached_at` are always present so
+      // the client can render an "Updated Xm ago" age without guessing whether the
+      // response was live or served from the disk-cache fallback (the cached paths
+      // above already carry them). Mirrors the Codex live-success block below.
+      stale: false,
+      cached_at: new Date(nowMs).toISOString(),
     };
     writeClaudeLimitsCache(claude, { home, nowMs });
     clearClaudeRateLimitCooldown({ home });
@@ -2782,6 +2788,19 @@ async function fetchUsageLimitsUncached({
           ? formatClaudeRateLimitMessage(Math.round((retryAtMs - nowMs) / 1000))
           : reason?.message || "Unknown error",
       };
+    }
+  }
+
+  // Expose the active 429 cool-down expiry (if any) on the Claude object so the
+  // client can (a) show when the next refresh is due next to stale bars and
+  // (b) schedule a one-shot refresh the instant the cool-down lifts instead of
+  // waiting out the poll interval. Re-read here (not the pre-fetch value) so a
+  // cool-down just armed by this cycle's 429 is included; a successful read above
+  // cleared the file, so this is null in the happy path.
+  if (claude.configured) {
+    const claudeCooldownMs = readClaudeRateLimitRetryAtMs({ home, nowMs });
+    if (claudeCooldownMs) {
+      claude.retry_at = new Date(claudeCooldownMs).toISOString();
     }
   }
 
@@ -2817,6 +2836,11 @@ async function fetchUsageLimitsUncached({
       spark_primary_window: codexResult.value.spark_primary_window,
       spark_secondary_window: codexResult.value.spark_secondary_window,
       reset_credits: codexResult.value.reset_credits,
+      // Live read is current as of now; the stale fallback path above serves the
+      // disk cache with `stale: true`. Always emitting both lets the client show a
+      // data-age label uniformly (see the Claude live-success block).
+      stale: false,
+      cached_at: new Date(nowMs).toISOString(),
     };
     writeCodexLimitsCache(codex, { home, nowMs });
   }

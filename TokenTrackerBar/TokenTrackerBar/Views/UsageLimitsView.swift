@@ -75,10 +75,10 @@ struct UsageLimitsView: View {
 
             switch id {
             case "claude" where limits.claude.configured && limits.claude.error == nil:
-                groups.append(AnyView(toolSection(id: id, title: planTitle("Claude", limits.claude.planLabel), assetName: "ClaudeLogo", toolName: "Claude", specs: claudeSpecs(limits.claude))))
+                groups.append(AnyView(toolSection(id: id, title: planTitle("Claude", limits.claude.planLabel), assetName: "ClaudeLogo", toolName: "Claude", specs: claudeSpecs(limits.claude), updatedAtISO: limits.claude.cachedAt, isStale: limits.claude.stale ?? false, retryAtISO: limits.claude.retryAt)))
             case "codex" where limits.codex.configured && limits.codex.error == nil:
                 let resetState = codexResetBankViewData(limits.codex.resetCredits)
-                groups.append(AnyView(toolSection(id: id, title: planTitle("Codex", limits.codex.planLabel), assetName: "CodexLogo", toolName: "Codex", specs: codexSpecs(limits.codex), resetRows: resetState.rows, resetStatus: resetState.statusText)))
+                groups.append(AnyView(toolSection(id: id, title: planTitle("Codex", limits.codex.planLabel), assetName: "CodexLogo", toolName: "Codex", specs: codexSpecs(limits.codex), resetRows: resetState.rows, resetStatus: resetState.statusText, updatedAtISO: limits.codex.cachedAt, isStale: limits.codex.stale ?? false)))
             case "cursor" where limits.cursor.configured && limits.cursor.error == nil:
                 groups.append(AnyView(toolSection(id: id, title: planTitle("Cursor", limits.cursor.planLabel), assetName: "CursorLogo", toolName: "Cursor", specs: cursorSpecs(limits.cursor))))
             case "gemini" where limits.gemini.configured && limits.gemini.error == nil:
@@ -124,12 +124,21 @@ struct UsageLimitsView: View {
         specs: [LimitWindowSpec],
         resetRows: [CodexResetRowSpec] = [],
         resetStatus: String? = nil,
-        footnote: String? = nil
+        footnote: String? = nil,
+        // Provider's own last-fetch stamp (Claude/Codex); nil falls back to the
+        // response-level `fetched_at`, which is when every live provider was read.
+        updatedAtISO: String? = nil,
+        isStale: Bool = false,
+        // Active 429 cool-down expiry (Claude), when one is in effect — shown as the
+        // "retrying" instant next to stale bars.
+        retryAtISO: String? = nil
     ) -> some View {
         let isOpen = Binding(
             get: { explainingProvider == id },
             set: { explainingProvider = $0 ? id : nil }
         )
+        let updatedAt = resetDate(iso: updatedAtISO ?? limits?.fetchedAt)
+        let retryAt = resetDate(iso: retryAtISO)
         return VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 5) {
                 if let assetName {
@@ -154,10 +163,12 @@ struct UsageLimitsView: View {
                     .foregroundStyle(.tertiary)
             }
         }
-        .modifier(ProviderClickableStyle(isActive: explainingProvider == id))
+        .modifier(ProviderClickableStyle(isActive: explainingProvider == id, isStale: isStale))
         .onTapGesture { explainingProvider = (explainingProvider == id) ? nil : id }
         .popover(isPresented: isOpen, arrowEdge: .trailing) {
-            LimitsExplainContent(providerName: title, specs: specs, remainingMode: settings.displayMode == .remaining)
+            // Keep on one line: codex-reset-bank guardrail tests assert this exact
+            // call shape to prove reset-bank rows never leak into the explanation.
+            LimitsExplainContent(providerName: title, specs: specs, remainingMode: settings.displayMode == .remaining, updatedAt: updatedAt, isStale: isStale, retryAt: retryAt)
         }
     }
 
@@ -667,6 +678,10 @@ private struct CodexResetRowSpec: Identifiable {
 /// a pointing-hand cursor. `isActive` keeps the highlight while its popover is open.
 private struct ProviderClickableStyle: ViewModifier {
     let isActive: Bool
+    /// The provider's data is being served from the stale disk-cache fallback
+    /// (e.g. a 429 cool-down froze refreshes). Surface a persistent amber badge so
+    /// the staleness is visible at rest, not only after opening the info popover.
+    var isStale: Bool = false
     @State private var hovering = false
 
     func body(content: Content) -> some View {
@@ -678,16 +693,23 @@ private struct ProviderClickableStyle: ViewModifier {
                     .fill(Color.primary.opacity(isActive ? 0.08 : (hovering ? 0.05 : 0)))
             )
             // Click affordance: the hover highlight alone doesn't say "clickable",
-            // so fade in an info glyph at the title line while hovered / open.
+            // so fade in an info glyph at the title line while hovered / open. When
+            // data is stale, an amber "clock" badge takes its place at rest so the
+            // user notices without hovering; hovering still reveals the info glyph.
             .overlay(alignment: .topTrailing) {
-                Image(systemName: "info.circle")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.tertiary)
-                    .padding(.top, 6)
-                    .padding(.trailing, 8)
-                    .opacity(hovering || isActive ? 1 : 0)
-                    .animation(.easeOut(duration: 0.12), value: hovering)
-                    .allowsHitTesting(false)
+                ZStack {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .foregroundStyle(.orange)
+                        .opacity(isStale && !(hovering || isActive) ? 1 : 0)
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(.tertiary)
+                        .opacity(hovering || isActive ? 1 : 0)
+                }
+                .font(.system(size: 10, weight: .medium))
+                .padding(.top, 6)
+                .padding(.trailing, 8)
+                .animation(.easeOut(duration: 0.12), value: hovering)
+                .allowsHitTesting(false)
             }
             .contentShape(RoundedRectangle(cornerRadius: 8))
             .onHover { hovering in
@@ -715,6 +737,13 @@ private struct LimitsExplainContent: View {
     let providerName: String
     let specs: [LimitWindowSpec]
     let remainingMode: Bool
+    /// When this provider's data was last successfully fetched, and whether it is a
+    /// stale disk-cache fallback. Drives the "Updated Xm ago" footer.
+    var updatedAt: Date? = nil
+    var isStale: Bool = false
+    /// Active 429 cool-down expiry, shown as "Retrying <time>" beneath the updated
+    /// line so the user knows when the panel will next attempt a refresh.
+    var retryAt: Date? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -736,9 +765,45 @@ private struct LimitsExplainContent: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if let updatedLabel {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 4) {
+                        if isStale {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .font(.system(size: 9, weight: .medium))
+                        }
+                        Text(updatedLabel)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let retryLabel {
+                        Text(retryLabel)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(isStale ? Color.orange : Color.secondary)
+            }
         }
         .padding(14)
         .frame(width: 256)
+    }
+
+    /// "Updated 2h ago · 7/7 10:26" — relative age (matches the reset rows' style)
+    /// plus the exact local instant the user asked to see. Amber when stale.
+    private var updatedLabel: String? {
+        guard let updatedAt else { return nil }
+        let seconds = max(0, Date().timeIntervalSince(updatedAt))
+        let relative = Strings.limitsUpdatedRelative(secondsAgo: seconds)
+        let exact = Strings.codexResetBankExpiryDateTime(updatedAt)
+        return "\(relative) · \(exact)"
+    }
+
+    /// "Retrying 7/7 11:11" — when the panel will next attempt a refresh, shown only
+    /// while a 429 cool-down is actually pending (so the data is known-stale).
+    private var retryLabel: String? {
+        guard isStale, let retryAt, retryAt.timeIntervalSinceNow > 0 else { return nil }
+        return Strings.limitsRetryingAt(retryAt)
     }
 
     /// Live pace numbers + current-rate projection for one window, via the shared

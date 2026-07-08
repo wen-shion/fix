@@ -30,15 +30,27 @@ struct ClaudeLimits: Codable, Equatable {
     let sevenDayOpus: ClaudeWindow?
     let weeklyScoped: [ClaudeScopedWindow]?
     let extraUsage: ClaudeExtraUsage?
+    /// When this data was last successfully fetched from the provider, and whether
+    /// it is being served from the stale disk-cache fallback (e.g. during a 429
+    /// cool-down when the live usage endpoint is rate-limited). Both are optional so
+    /// responses from older server builds still decode; a missing `stale` reads as fresh.
+    let cachedAt: String?
+    let stale: Bool?
+    /// Expiry of an active 429 cool-down (ISO-8601), when one is in effect. Absent in
+    /// the happy path. Lets the UI show when the next refresh is due and lets the app
+    /// schedule a one-shot refresh the moment the cool-down lifts.
+    let retryAt: String?
 
     enum CodingKeys: String, CodingKey {
-        case configured, error
+        case configured, error, stale
         case planLabel = "plan_label"
         case fiveHour = "five_hour"
         case sevenDay = "seven_day"
         case sevenDayOpus = "seven_day_opus"
         case weeklyScoped = "weekly_scoped"
         case extraUsage = "extra_usage"
+        case cachedAt = "cached_at"
+        case retryAt = "retry_at"
     }
 }
 
@@ -89,9 +101,13 @@ struct CodexLimits: Codable, Equatable {
     let sparkPrimaryWindow: CodexWindow?
     let sparkSecondaryWindow: CodexWindow?
     let resetCredits: ResetCredits?
+    /// Data-age fields, mirroring `ClaudeLimits` — Codex serves its last-successful
+    /// disk cache (`stale: true`) when the live wham read times out.
+    let cachedAt: String?
+    let stale: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case configured, error
+        case configured, error, stale
         case planLabel = "plan_label"
         case primaryWindow = "primary_window"
         case secondaryWindow = "secondary_window"
@@ -99,6 +115,7 @@ struct CodexLimits: Codable, Equatable {
         case sparkPrimaryWindow = "spark_primary_window"
         case sparkSecondaryWindow = "spark_secondary_window"
         case resetCredits = "reset_credits"
+        case cachedAt = "cached_at"
     }
 
     struct ResetCredits: Codable, Equatable {

@@ -137,6 +137,15 @@ private func parseResetSeconds(iso: String?) -> Double? {
 }
 
 extension UsageLimitsResponse {
+    /// Soonest active rate-limit cool-down expiry (unix seconds) across providers that
+    /// expose one, or nil if none is pending. The app wakes at this instant to refresh
+    /// the moment the cool-down lifts, instead of waiting out the regular poll interval.
+    func soonestCooldownExpiry() -> Double? {
+        [parseResetSeconds(iso: claude.retryAt)].compactMap { $0 }.min()
+    }
+}
+
+extension UsageLimitsResponse {
     /// Flatten every provider's windows into `(provider, windowKey, windowLabel, usedPercent, resetAt)`
     /// tuples (percent on a 0–100 scale, resetAt in unix seconds), skipping providers
     /// that errored or are unconfigured.

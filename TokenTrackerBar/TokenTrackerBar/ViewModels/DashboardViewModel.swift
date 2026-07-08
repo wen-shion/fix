@@ -331,20 +331,20 @@ class DashboardViewModel: ObservableObject {
         scheduleResetBoundaryRefresh(for: usageLimits)
     }
 
-    /// Wake up just after the soonest known window rollover and re-fetch limits,
-    /// so a reset (and its confetti) is detected within seconds of the boundary
-    /// instead of waiting out the regular poll interval. Every limits refresh
-    /// reschedules, so at most one boundary task is pending at a time.
+    /// Wake up just after the soonest upcoming boundary and re-fetch limits, instead
+    /// of waiting out the regular poll interval. Boundaries are (a) a window rollover —
+    /// so a reset and its confetti are detected within seconds — and (b) the expiry of
+    /// an active 429 cool-down — so a rate-limited panel refreshes the instant the
+    /// cool-down lifts rather than up to a poll later. Every limits refresh reschedules,
+    /// so at most one boundary task is pending at a time.
     private func scheduleResetBoundaryRefresh(for limits: UsageLimitsResponse?) {
         resetBoundaryRefreshTask?.cancel()
         resetBoundaryRefreshTask = nil
         guard let limits else { return }
         let now = Date().timeIntervalSince1970
-        let upcoming = limits.limitWindowReadings()
-            .compactMap { $0.resetAt }
-            .filter { $0 > now }
-            .min()
-        guard let upcoming else { return }
+        let boundaries = limits.limitWindowReadings().compactMap { $0.resetAt }
+            + [limits.soonestCooldownExpiry()].compactMap { $0 }
+        guard let upcoming = boundaries.filter({ $0 > now }).min() else { return }
         let delay = upcoming - now + Self.resetBoundaryGrace
         resetBoundaryRefreshTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
