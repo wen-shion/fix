@@ -119,6 +119,8 @@ async function cmdUninstall(argv) {
           ? `- Codex notify restored: ${codexConfigPath}`
           : codexRestore?.skippedReason === "no-backup-not-installed"
             ? "- Codex notify: skipped (no backup; not installed)"
+            : codexRestore?.skippedReason === "current-not-managed"
+              ? "- Codex notify: skipped (current notify is not managed by TokenTracker)"
             : "- Codex notify: no change"
         : "- Codex notify: skipped (config.toml not found)",
       codeConfigExists
@@ -126,6 +128,8 @@ async function cmdUninstall(argv) {
           ? `- Every Code notify restored: ${codeConfigPath}`
           : codeRestore?.skippedReason === "no-backup-not-installed"
             ? "- Every Code notify: skipped (no backup; not installed)"
+            : codeRestore?.skippedReason === "current-not-managed"
+              ? "- Every Code notify: skipped (current notify is not managed by TokenTracker)"
             : "- Every Code notify: no change"
         : "- Every Code notify: skipped (config.toml not found)",
       claudeConfigExists

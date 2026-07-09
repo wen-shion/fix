@@ -52,6 +52,10 @@ async function restoreNotify({ configPath, notifyOriginalPath, expectedNotify })
   const originalNotify = Array.isArray(original?.notify) ? original.notify : null;
   const currentNotify = extractNotify(text);
 
+  if (expectedNotify && !arraysEqual(currentNotify, expectedNotify)) {
+    return { restored: false, skippedReason: "current-not-managed" };
+  }
+
   if (!originalNotify && expectedNotify && !arraysEqual(currentNotify, expectedNotify)) {
     return { restored: false, skippedReason: "no-backup-not-installed" };
   }
@@ -216,8 +220,7 @@ function removeNotify(text) {
 }
 
 function parseTomlStringArray(rhs) {
-  // Minimal parser for ["a", "b"] string arrays.
-  // Assumes there are no escapes in strings (good enough for our usage).
+  // Minimal parser for TOML basic/literal string arrays.
   if (!rhs.startsWith("[") || !rhs.endsWith("]")) return null;
   const inner = rhs.slice(1, -1).trim();
   if (!inner) return [];
@@ -240,6 +243,18 @@ function parseTomlStringArray(rhs) {
       parts.push(current);
       inString = false;
       quote = null;
+      continue;
+    }
+    if (quote === '"' && ch === "\\") {
+      if (i + 1 >= inner.length) return null;
+      const next = inner[++i];
+      if (next === "b") current += "\b";
+      else if (next === "t") current += "\t";
+      else if (next === "n") current += "\n";
+      else if (next === "f") current += "\f";
+      else if (next === "r") current += "\r";
+      else if (next === '"' || next === "\\" || next === "/") current += next;
+      else return null;
       continue;
     }
     current += ch;

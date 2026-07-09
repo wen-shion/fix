@@ -34,6 +34,24 @@ test("readNotify parses multi-line notify arrays", async () => {
   ]);
 });
 
+test("readNotify unescapes JSON/TOML basic string escapes", async () => {
+  const dir = tmpDir("tokentracker-codex-config-");
+  const configPath = path.join(dir, "config.toml");
+
+  fs.writeFileSync(
+    configPath,
+    'notify = ["/usr/bin/env", "node", "C:\\\\Users\\\\alice\\\\.tokentracker\\\\bin\\\\notify.cjs"]\n',
+    "utf8",
+  );
+
+  const notify = await readNotify(configPath);
+  assert.deepEqual(notify, [
+    "/usr/bin/env",
+    "node",
+    "C:\\Users\\alice\\.tokentracker\\bin\\notify.cjs",
+  ]);
+});
+
 test("upsertNotify replaces multi-line notify blocks without leaving trailing lines", async () => {
   const dir = tmpDir("tokentracker-codex-upsert-");
   const configPath = path.join(dir, "config.toml");
@@ -118,4 +136,23 @@ test("restoreNotify restores from notifyOriginalPath even if config was updated"
     ),
     true,
   );
+});
+
+test("restoreNotify skips stale backup when current notify is not managed", async () => {
+  const dir = tmpDir("tokentracker-codex-restore-");
+  const configPath = path.join(dir, "config.toml");
+  const notifyOriginalPath = path.join(dir, "codex_notify_original.json");
+
+  fs.writeFileSync(
+    notifyOriginalPath,
+    JSON.stringify({ notify: ["old-notify"], capturedAt: new Date().toISOString() }),
+    "utf8",
+  );
+  fs.writeFileSync(configPath, 'notify = ["third-party-notify", "new"]\n', "utf8");
+
+  const expectedNotify = ["/usr/bin/env", "node", "/Users/alice/.tokentracker/bin/notify.cjs"];
+  const result = await restoreNotify({ configPath, notifyOriginalPath, expectedNotify });
+  assert.equal(result.restored, false);
+  assert.equal(result.skippedReason, "current-not-managed");
+  assert.equal(fs.readFileSync(configPath, "utf8"), 'notify = ["third-party-notify", "new"]\n');
 });

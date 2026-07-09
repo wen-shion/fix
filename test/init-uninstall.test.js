@@ -37,7 +37,7 @@ function flattenHookEntries(entries) {
   return entries.flatMap((entry) => (Array.isArray(entry?.hooks) ? entry.hooks : [entry]));
 }
 
-async function runGeneratedNotifyHandler({ trackerDir, notify }) {
+async function runGeneratedNotifyHandler({ trackerDir, notify, args = ["--source=codex", "turn-ended"] }) {
   await fs.mkdir(trackerDir, { recursive: true });
   const notifyPath = path.join(trackerDir, "notify.cjs");
   await fs.writeFile(
@@ -56,7 +56,7 @@ async function runGeneratedNotifyHandler({ trackerDir, notify }) {
     delete env.TOKENTRACKER_DEVICE_TOKEN;
     const child = require("node:child_process").execFile(
       process.execPath,
-      [notifyPath, "--source=codex", "turn-ended"],
+      [notifyPath, ...args],
       { env },
       (err) => (err ? reject(err) : resolve()),
     );
@@ -125,6 +125,30 @@ test("notify handler avoids duplicating existing payload args when chaining", as
 
     const marker = await waitForFile(markerPath, { timeoutMs: 5000 });
     assert.equal(marker, "turn-ended");
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("notify handler preserves legitimate repeated payload args when chaining", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-notify-chain-"));
+  try {
+    const markerPath = path.join(tmp, "repeat-marker");
+    const shimPath = path.join(tmp, "repeat-notify.js");
+    await fs.writeFile(
+      shimPath,
+      `require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, process.argv.slice(2).join('|'));\n`,
+      "utf8",
+    );
+
+    await runGeneratedNotifyHandler({
+      trackerDir: path.join(tmp, "tracker-repeat"),
+      notify: [process.execPath, shimPath, "turn-ended"],
+      args: ["--source=codex", "--include", "a", "--include", "b"],
+    });
+
+    const marker = await waitForFile(markerPath, { timeoutMs: 5000 });
+    assert.equal(marker, "turn-ended|--include|a|--include|b");
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
@@ -242,6 +266,44 @@ test("serve-time Codex notify repair skips unknown third-party notify", async ()
     const config = await fs.readFile(path.join(process.env.CODEX_HOME, "config.toml"), "utf8");
     assert.match(config, /third-party-notify/);
     assert.doesNotMatch(config, /notify\.cjs/);
+  } finally {
+    if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = prevCodexHome;
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("serve-time Codex notify repair skips unknown notify.cjs command", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-notify-repair-"));
+  const prevCodexHome = process.env.CODEX_HOME;
+  try {
+    process.env.CODEX_HOME = path.join(tmp, ".codex");
+    const trackerDir = path.join(tmp, ".tokentracker", "tracker");
+    const binDir = path.join(tmp, ".tokentracker", "bin");
+    await fs.mkdir(process.env.CODEX_HOME, { recursive: true });
+    const externalNotify = ["/usr/bin/env", "node", path.join(tmp, "custom", "notify.cjs")];
+    await fs.writeFile(
+      path.join(process.env.CODEX_HOME, "config.toml"),
+      `notify = ${JSON.stringify(externalNotify)}\n`,
+      "utf8",
+    );
+
+    const result = await repairCodexNotifyIntegration({
+      home: tmp,
+      trackerDir,
+      binDir,
+      safeMode: true,
+    });
+
+    assert.equal(result.changed, false);
+    assert.equal(result.skippedReason, "external-notify");
+    const config = await fs.readFile(path.join(process.env.CODEX_HOME, "config.toml"), "utf8");
+    assert.match(config, /custom/);
+    assert.doesNotMatch(config, /\.tokentracker/);
+    await assert.rejects(
+      fs.stat(path.join(trackerDir, "codex_notify_original.json")),
+      /ENOENT/,
+    );
   } finally {
     if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = prevCodexHome;
@@ -429,6 +491,50 @@ test("init then uninstall removes notify when none existed", async () => {
       !/^notify\s*=.*$/m.test(restored),
       "expected uninstall to remove notify when none existed",
     );
+  } finally {
+    process.stdout.write = prevWrite;
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = prevCodexHome;
+    if (prevToken === undefined) delete process.env.TOKENTRACKER_DEVICE_TOKEN;
+    else process.env.TOKENTRACKER_DEVICE_TOKEN = prevToken;
+    if (prevOpencodeConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
+    else process.env.OPENCODE_CONFIG_DIR = prevOpencodeConfigDir;
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("uninstall does not restore stale backup over active third-party Codex notify", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-init-uninstall-"));
+  const prevHome = process.env.HOME;
+  const prevCodexHome = process.env.CODEX_HOME;
+  const prevToken = process.env.TOKENTRACKER_DEVICE_TOKEN;
+  const prevOpencodeConfigDir = process.env.OPENCODE_CONFIG_DIR;
+  const prevWrite = process.stdout.write;
+
+  try {
+    process.env.HOME = tmp;
+    process.env.CODEX_HOME = path.join(tmp, ".codex");
+    delete process.env.TOKENTRACKER_DEVICE_TOKEN;
+    process.env.OPENCODE_CONFIG_DIR = path.join(tmp, ".config", "opencode");
+    await fs.mkdir(process.env.CODEX_HOME, { recursive: true });
+
+    const trackerDir = path.join(tmp, ".tokentracker", "tracker");
+    await fs.mkdir(trackerDir, { recursive: true });
+    const codexConfigPath = path.join(process.env.CODEX_HOME, "config.toml");
+    await fs.writeFile(codexConfigPath, 'notify = ["third-party-notify", "new"]\n', "utf8");
+    await fs.writeFile(
+      path.join(trackerDir, "codex_notify_original.json"),
+      JSON.stringify({ notify: ["old-notify"], capturedAt: "2026-01-01T00:00:00.000Z" }) + "\n",
+      "utf8",
+    );
+
+    process.stdout.write = () => true;
+    await cmdUninstall([]);
+
+    const restored = await fs.readFile(codexConfigPath, "utf8");
+    assert.equal(restored, 'notify = ["third-party-notify", "new"]\n');
   } finally {
     process.stdout.write = prevWrite;
     if (prevHome === undefined) delete process.env.HOME;

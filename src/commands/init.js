@@ -916,7 +916,7 @@ async function shouldRepairCodexNotify({ currentNotify, expectedNotify, notifyOr
   if (arraysEqual(currentNotify, expectedNotify)) {
     return { repair: false, reason: "already-set" };
   }
-  if (isTokenTrackerNotify(currentNotify)) {
+  if (isTokenTrackerNotify(currentNotify, expectedNotify)) {
     return { repair: true, captureOriginal: false };
   }
   if (isSkyComputerUseNotify(currentNotify)) {
@@ -932,9 +932,13 @@ async function shouldRepairCodexNotify({ currentNotify, expectedNotify, notifyOr
   return { repair: false, reason: "external-notify" };
 }
 
-function isTokenTrackerNotify(cmd) {
+function isTokenTrackerNotify(cmd, expectedNotify) {
   if (!Array.isArray(cmd)) return false;
-  return cmd.some((part) => typeof part === "string" && part.includes("notify.cjs"));
+  if (arraysEqual(cmd, expectedNotify)) return true;
+  const notifyPath = cmd.find((part) => typeof part === "string" && part.endsWith("notify.cjs"));
+  if (!notifyPath) return false;
+  const normalized = notifyPath.replace(/\\/g, "/");
+  return normalized.includes("/.tokentracker/");
 }
 
 function isSkyComputerUseNotify(cmd) {
@@ -1099,8 +1103,8 @@ try {
     const cmd = Array.isArray(original?.notify) ? original.notify : null;
     if (cmd && cmd.length > 0 && !isSelfNotify(cmd) && shouldChainNotify(cmd)) {
       const args = cmd.slice(1);
-      for (const payloadArg of payloadArgs) {
-        if (!args.includes(payloadArg)) args.push(payloadArg);
+      if (payloadArgs.length > 0 && !containsSequence(args, payloadArgs)) {
+        args.push(...payloadArgs);
       }
       spawnDetached([cmd[0], ...args]);
     }
@@ -1153,6 +1157,22 @@ function isRunnableCommand(command) {
   } catch (_) {
     return false;
   }
+}
+
+function containsSequence(haystack, needle) {
+  if (!Array.isArray(haystack) || !Array.isArray(needle) || needle.length === 0) return false;
+  if (needle.length > haystack.length) return false;
+  for (let i = 0; i <= haystack.length - needle.length; i++) {
+    let matched = true;
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) {
+        matched = false;
+        break;
+      }
+    }
+    if (matched) return true;
+  }
+  return false;
 }
 `;
 }
