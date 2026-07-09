@@ -20,8 +20,16 @@ final class ServerManager: ObservableObject {
 
     // MARK: - Lifecycle
 
-    /// Call once on app launch. Prefers embedded server, falls back to system CLI.
+    /// Ensure a healthy server is available. Safe to call repeatedly (launch,
+    /// wake, retry): when our own child process is alive and the server answers
+    /// health checks, this is a no-op — it never tears down a healthy server.
     func ensureServerRunning() async {
+        if let process = serverProcess, process.isRunning,
+           await APIClient.shared.checkServerHealth() {
+            status = .running
+            return
+        }
+
         status = .starting
 
         // Try embedded server first
@@ -72,12 +80,18 @@ final class ServerManager: ObservableObject {
     // MARK: - Kill Stale Server
 
     /// Kill any existing process listening on the server port so the embedded server can bind.
+    /// Matches LISTEN sockets only: a bare `lsof -ti tcp:<port>` also lists processes with
+    /// *client* connections to the port — including this app's own URLSession keep-alive
+    /// sockets — and SIGTERMing that list makes the app kill itself. Its own PID is
+    /// excluded as a second line of defense.
     private nonisolated func killExistingServerOnPort() async {
-        guard let output = shellOutput("/usr/sbin/lsof", args: ["-ti", "tcp:\(Constants.serverPort)"]) else { return }
+        guard let output = shellOutput("/usr/sbin/lsof", args: ["-ti", "tcp:\(Constants.serverPort)", "-sTCP:LISTEN"]) else { return }
+        let ownPid = ProcessInfo.processInfo.processIdentifier
         let pids = output
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .split(separator: "\n")
             .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+            .filter { $0 != ownPid }
         for pid in pids {
             kill(pid, SIGTERM)
         }
