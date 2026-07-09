@@ -105,7 +105,29 @@ internal sealed class DashboardWindow : Window
         Content = _webView;
 
         Loaded += async (_, _) => await InitializeWebViewAsync();
-        StateChanged += (_, _) => SyncMaxGlyph();
+        StateChanged += (_, _) =>
+        {
+            SyncMaxGlyph();
+            // Minimising this window (WindowStyle.None + WindowChrome
+            // GlassFrameThickness=-1 "sheet of glass" + DwmExtendFrameIntoClientArea(-1)
+            // + Acrylic, hosting a WebView2CompositionControl / DirectComposition visual)
+            // leaves a transparent, hit-testable "ghost" at the window's pre-minimise
+            // rectangle: the DComp visual isn't torn down on minimise, so it keeps
+            // presenting / capturing mouse input over the desktop (you can see the desktop
+            // but can't click anything inside the old window rect; desktop icons stop
+            // highlighting). Collapsing the WebView2CompositionControl removes its DComp
+            // visual from the window's composition tree, so the ghost stops presenting /
+            // hit-testing, while the HWND itself truly minimises — staying taskbar- and
+            // Win+D-restorable. Restored to Visible on Normal. This covers every minimise
+            // path uniformly (the minimise button, taskbar click, Win+D "show desktop",
+            // right-click -> Minimize, programmatic SW_MINIMIZE) with no behavioural
+            // change (minimise still minimises-to-taskbar) and without Hide(), which broke
+            // Win+D restore (the HWND left DWM's minimised-windows list) and tray restore
+            // (WindowState stayed Minimized, so ShowDashboard re-fired this handler).
+            _webView.Visibility = (WindowState == WindowState.Minimized)
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+        };
         KeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Escape) Hide(); };
         _server.StatusChanged += OnServerStatusChanged;
     }
