@@ -259,6 +259,15 @@ internal sealed class PetWindow : Window
                     ReleaseCapture();
                     SendMessage(_hwnd, WM_NCLBUTTONDOWN, (nint)HTCAPTION, nint.Zero);
                     _isDragging = false;
+                    // Settle placement synchronously, right here on the UI thread, before
+                    // any DispatcherTimer tick can run. Deferring to the 500ms _saveTimer
+                    // would let HoverTick fire first while _miniMode is still true; its
+                    // edge-anchored reveal/tuck would snap the window back to the right
+                    // edge, so SavePlacement would then always see it at the edge and the
+                    // pet could never leave mini mode. Running it now also covers the
+                    // "release without a final move fires no LocationChanged" case.
+                    _saveTimer.Stop();
+                    SavePlacement();
                     break;
                 case "pet:context-menu":
                     ContextMenuRequested?.Invoke();
@@ -778,6 +787,10 @@ internal sealed class PetWindow : Window
 
     private void SavePlacement()
     {
+        // The native drag's modal move loop keeps pumping messages, so the 500ms
+        // _saveTimer can tick mid-drag. Bail then: snapping/ApplyEdgePlacement here would
+        // start an edge animation that fights the OS drag and reintroduces the jitter.
+        if (_isDragging) return;
         if (WindowState != WindowState.Normal) return;
         var x = Left;
         var y = Top;
